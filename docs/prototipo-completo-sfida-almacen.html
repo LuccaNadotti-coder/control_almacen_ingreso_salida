@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SFIDA · Salidas y Devoluciones</title>
+<style>
+  :root{
+    --bg:#141013; --panel:#1C181B; --panel-2:#232025; --line:#2E292F;
+    --text:#EDE7EA; --muted:#9B9098; --wine:#9B2E48; --wine-soft:#3A1A24;
+    --ok:#3E8E5A; --warn:#C08A2E; --radius:10px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:"Inter",ui-sans-serif,system-ui,"Segoe UI",sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .num{font-variant-numeric:tabular-nums}
+
+  .app{display:grid;grid-template-columns:214px 1fr;min-height:100vh}
+  .side{background:var(--panel);border-right:1px solid var(--line);padding:20px 12px;display:flex;flex-direction:column;gap:22px}
+  .brand{padding:0 10px}
+  .brand h1{font-size:15px;letter-spacing:.14em;font-weight:600}
+  .brand span{display:block;font-size:11px;color:var(--muted);letter-spacing:.06em;margin-top:2px}
+  .nav{display:flex;flex-direction:column;gap:2px}
+  .nav button{all:unset;cursor:pointer;padding:9px 12px;border-radius:8px;color:var(--muted);font-size:13.5px}
+  .nav button:hover{background:var(--panel-2);color:var(--text)}
+  .nav button.on{background:var(--wine-soft);color:var(--text);box-shadow:inset 2px 0 0 var(--wine)}
+  .nav button:focus-visible{outline:2px solid var(--wine);outline-offset:1px}
+  .nav .sep{font-size:10.5px;letter-spacing:.16em;color:#6B626A;padding:14px 12px 6px}
+
+  main{padding:26px 30px 60px;max-width:1080px}
+  .head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:22px;flex-wrap:wrap}
+  .head h2{font-size:20px;font-weight:600;letter-spacing:-.01em}
+  .head p{color:var(--muted);font-size:13px;margin-top:3px;max-width:62ch}
+
+  .btn{all:unset;cursor:pointer;background:var(--wine);color:#fff;padding:9px 15px;border-radius:8px;font-size:13px;font-weight:500}
+  .btn:hover{background:#B03A55}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .btn.ghost:hover{background:var(--panel-2)}
+  .btn.sm{padding:4px 10px;font-size:12px}
+  .btn:focus-visible{outline:2px solid #E88AA0;outline-offset:2px}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:18px}
+  .card h3{font-size:13px;font-weight:600;padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px}
+  .card h3 em{font-style:normal;font-size:11.5px;color:var(--muted);font-weight:400}
+  .pad{padding:18px}
+
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:#6B626A;font-weight:600;padding:11px 18px;border-bottom:1px solid var(--line)}
+  td{padding:12px 18px;border-bottom:1px solid var(--line);font-size:13.5px}
+  tbody tr:last-child td{border-bottom:0}
+  tr.click{cursor:pointer}
+  tr.click:hover td{background:var(--panel-2)}
+  .r{text-align:right}
+  .sku{color:var(--muted);font-size:12.5px}
+
+  .tag{display:inline-block;font-size:11px;padding:3px 9px;border-radius:99px;font-weight:500}
+  .t-pend{background:#2A2530;color:#B0A6B4}
+  .t-parc{background:#382C12;color:#E3B95F}
+  .t-comp{background:#17301F;color:#6FC98C}
+  .falta{color:#F08AA0;font-weight:600}
+  .cero{color:#5F5A60}
+  .bar{display:inline-block;height:5px;border-radius:3px;background:var(--wine);overflow:hidden;width:104px;vertical-align:middle}
+  .bar i{display:block;height:100%;background:var(--ok)}
+
+  label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#6B626A;margin-bottom:6px}
+  input,select{width:100%;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:9px 11px;color:var(--text);font-size:13.5px;font-family:inherit}
+  input:focus,select:focus{outline:2px solid var(--wine);outline-offset:-1px;border-color:transparent}
+  input.qty{width:72px;text-align:right;font-variant-numeric:tabular-nums}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .kpi div{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
+  .kpi b{display:block;font-size:24px;font-weight:600;letter-spacing:-.02em}
+  .kpi span{font-size:11px;letter-spacing:.11em;text-transform:uppercase;color:#6B626A}
+  .kpi .acc b{color:#F08AA0}
+
+  .note{font-size:12px;color:var(--muted);padding:10px 18px;background:var(--panel-2);border-top:1px solid var(--line)}
+  .foot{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-top:1px solid var(--line);gap:14px;flex-wrap:wrap}
+  .foot .resumen{font-size:13px;color:var(--muted)}
+  .aviso{background:#2A210F;border:1px solid #4A3A18;color:#E3B95F;font-size:12.5px;padding:10px 14px;border-radius:8px;margin:0 18px 16px}
+
+  /* historial */
+  .time{padding-left:20px}
+  .time li{list-style:none;position:relative;padding:0 0 16px 0}
+  .time li:before{content:"";position:absolute;left:-20px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--wine)}
+  .time li:after{content:"";position:absolute;left:-17px;top:15px;bottom:0;width:1px;background:var(--line)}
+  .time li:last-child{padding-bottom:0}
+  .time li:last-child:after{display:none}
+  .time b{font-size:13px;font-weight:600}
+  .time p{font-size:12.5px;color:var(--muted)}
+
+  /* reparto FIFO */
+  .prod{border-bottom:1px solid var(--line);padding:16px 18px}
+  .prod:last-child{border-bottom:0}
+  .prod-h{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+  .prod-h b{font-size:14px;font-weight:600}
+  .prod-h span{font-size:12.5px;color:var(--muted)}
+  .alloc{display:flex;align-items:center;gap:12px;padding:7px 0 7px 14px;border-left:2px solid var(--wine-soft)}
+  .alloc .bol{width:78px;font-weight:600;font-size:13px}
+  .alloc .fch{width:58px;color:var(--muted);font-size:12.5px}
+  .alloc .est{flex:1;font-size:12.5px;color:var(--muted)}
+  .alloc.excede{border-left-color:var(--warn)}
+  .alloc.excede .bol{color:#E3B95F}
+  .cierra{color:#6FC98C}
+  .queda{color:#F08AA0}
+  .manual{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#E3B95F;margin-left:2px}
+
+  .view{display:none}.view.on{display:block}
+  @media (max-width:860px){
+    .app{grid-template-columns:1fr}
+    .side{flex-direction:row;align-items:center;overflow-x:auto;gap:12px}
+    .nav{flex-direction:row}.nav .sep{display:none}
+    main{padding:20px 16px 50px}
+    .kpi,.grid4,.grid3,.grid2{grid-template-columns:1fr 1fr}
+    .alloc{flex-wrap:wrap;gap:8px}.alloc .est{width:100%;flex:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="brand"><h1>SFIDA</h1><span>Almacén · v0</span></div>
+    <nav class="nav">
+      <span class="sep">OPERACIÓN</span>
+      <button class="on" data-go="salidas">Salidas</button>
+      <button data-go="nueva">Nueva salida</button>
+      <button data-go="devolver">Registrar devolución</button>
+      <button data-go="retornos">Retornos</button>
+      <span class="sep">REPORTES</span>
+      <button data-go="pendientes">Pendientes</button>
+      <span class="sep">SISTEMA</span>
+      <button data-go="maestros">Maestros</button>
+      <button data-go="ajustes">Ajustes</button>
+    </nav>
+  </aside>
+
+  <main>
+
+    <!-- ===== SALIDAS ===== -->
+    <section class="view on" id="salidas">
+      <div class="head">
+        <div><h2>Salidas</h2><p>Boletas emitidas hacia las áreas de trabajo.</p></div>
+        <button class="btn" data-go="nueva">Nueva salida</button>
+      </div>
+      <div class="kpi">
+        <div><span>Boletas abiertas</span><b class="num">3</b></div>
+        <div><span>Prendas fuera</span><b class="num">252</b></div>
+        <div class="acc"><span>Sin devolver</span><b class="num">86</b></div>
+        <div><span>Cerradas este mes</span><b class="num">23</b></div>
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Boleta</th><th>Área</th><th>Encargado</th><th>Salida</th><th class="r">Salió</th><th class="r">Falta</th><th>Estado</th></tr></thead>
+          <tbody>
+            <tr class="click" data-go="detalle"><td class="num">B-0453</td><td>Lavandería</td><td>Rosa Quispe</td><td class="num">18/07</td><td class="r num">86</td><td class="r num falta">42</td><td><span class="tag t-parc">Parcial</span></td></tr>
+            <tr class="click" data-go="detalle"><td class="num">B-0452</td><td>Diseño</td><td>Marco Ttito</td><td class="num">14/07</td><td class="r num">40</td><td class="r num falta">40</td><td><span class="tag t-pend">Pendiente</span></td></tr>
+            <tr class="click" data-go="detalle"><td class="num">B-0451</td><td>Lavandería</td><td>Rosa Quispe</td><td class="num">10/07</td><td class="r num">54</td><td class="r num falta">4</td><td><span class="tag t-parc">Parcial</span></td></tr>
+            <tr class="click" data-go="detalle"><td class="num">B-0450</td><td>Acabados</td><td>Elena Ramos</td><td class="num">04/07</td><td class="r num">72</td><td class="r num cero">0</td><td><span class="tag t-comp">Completo</span></td></tr>
+          </tbody>
+        </table>
+        <p class="note">Clic en una fila para ver el detalle y qué retornos la afectaron.</p>
+      </div>
+    </section>
+
+    <!-- ===== NUEVA SALIDA ===== -->
+    <section class="view" id="nueva">
+      <div class="head"><div><h2>Nueva salida</h2><p>Registra la boleta y las prendas que salen del almacén.</p></div></div>
+      <div class="card">
+        <h3>Datos de la boleta</h3>
+        <div class="pad">
+          <div class="grid2" style="margin-bottom:14px">
+            <div><label>N° de boleta</label><input value="B-0454"></div>
+            <div><label>Fecha de salida</label><input value="22/07/2026"></div>
+          </div>
+          <div class="grid2">
+            <div><label>Área</label><select><option>Lavandería</option><option>Diseño</option><option>Acabados</option></select></div>
+            <div><label>Encargado que recibe</label><select><option>Rosa Quispe</option><option>Marco Ttito</option><option>Elena Ramos</option></select></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Prendas</h3>
+        <div class="pad" style="border-bottom:1px solid var(--line)">
+          <div class="grid3" style="align-items:end">
+            <div><label>Buscar producto</label><input placeholder="modelo, talla o color…" value="BLUSA SORELLA"></div>
+            <div><label>Variante</label><select><option>Talla M · Blanco</option><option>Talla M · Negro</option><option>Talla L · Blanco</option></select></div>
+            <div style="display:flex;gap:10px;align-items:flex-end">
+              <div style="flex:0 0 auto"><label>Cantidad</label><input class="qty" value="24"></div>
+              <button class="btn ghost" style="flex:1">Agregar</button>
+            </div>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Modelo</th><th>Talla</th><th>Color</th><th class="r">Cantidad</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>VESTIDO SFIDA</td><td>L</td><td>Negro</td><td class="r num">18</td><td class="r"><button class="btn ghost sm">Quitar</button></td></tr>
+            <tr><td>JEAN INVESTOR</td><td>28</td><td>Azul</td><td class="r num">30</td><td class="r"><button class="btn ghost sm">Quitar</button></td></tr>
+            <tr><td>POLO PERRY JHAN</td><td>S</td><td>Rojo</td><td class="r num">12</td><td class="r"><button class="btn ghost sm">Quitar</button></td></tr>
+          </tbody>
+        </table>
+        <div class="foot">
+          <span class="resumen">3 líneas · <b class="num" style="color:var(--text)">60</b> prendas</span>
+          <div style="display:flex;gap:10px">
+            <button class="btn ghost" data-go="salidas">Cancelar</button>
+            <button class="btn" data-go="salidas">Guardar boleta</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== DETALLE ===== -->
+    <section class="view" id="detalle">
+      <div class="head">
+        <div>
+          <h2>Boleta B-0453 <span class="tag t-parc" style="vertical-align:middle;margin-left:6px">Parcial</span></h2>
+          <p>Lavandería · Rosa Quispe · salió el 18/07/2026 · 4 días fuera</p>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button class="btn ghost" data-go="salidas">Volver</button>
+          <button class="btn" data-go="devolver">Registrar devolución</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Reconciliación por producto</h3>
+        <table>
+          <thead><tr><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Salió</th><th class="r">Devuelto</th><th class="r">Falta</th><th>Avance</th></tr></thead>
+          <tbody>
+            <tr><td>BLUSA SORELLA</td><td>M</td><td>Blanco</td><td class="r num">24</td><td class="r num">24</td><td class="r num cero">0</td><td><span class="bar"><i style="width:100%"></i></span></td></tr>
+            <tr><td>VESTIDO SFIDA</td><td>L</td><td>Negro</td><td class="r num">32</td><td class="r num">10</td><td class="r num falta">22</td><td><span class="bar"><i style="width:31%"></i></span></td></tr>
+            <tr><td>JEAN INVESTOR</td><td>28</td><td>Azul</td><td class="r num">20</td><td class="r num">10</td><td class="r num falta">10</td><td><span class="bar"><i style="width:50%"></i></span></td></tr>
+            <tr><td>POLO PERRY JHAN</td><td>S</td><td>Rojo</td><td class="r num">10</td><td class="r num cero">0</td><td class="r num falta">10</td><td><span class="bar"><i style="width:0%"></i></span></td></tr>
+          </tbody>
+        </table>
+        <p class="note">Salieron <b class="num">86</b> · devueltas <b class="num">44</b> · <span class="falta">faltan 42</span></p>
+      </div>
+      <div class="card">
+        <h3>Retornos que afectaron esta boleta <em>El área devuelve mezclado; aquí se ve solo lo que tocó a B-0453</em></h3>
+        <div class="pad">
+          <ul class="time">
+            <li><b>R-0112 · 20/07/2026</b><p>Trajo 34 prendas en total, de las cuales <b>24</b> se aplicaron aquí — BLUSA SORELLA M Blanco (24)</p></li>
+            <li><b>R-0118 · 21/07/2026</b><p>Trajo 28 prendas en total, de las cuales <b>20</b> se aplicaron aquí — VESTIDO SFIDA L Negro (10), JEAN INVESTOR 28 Azul (10)</p></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== REGISTRAR DEVOLUCIÓN (FIFO) ===== -->
+    <section class="view" id="devolver">
+      <div class="head">
+        <div><h2>Registrar devolución</h2><p>El área devuelve prendas mezcladas de varias salidas. Indica solo cuánto llega; el sistema lo reparte contra las boletas más antiguas y tú corriges si hace falta.</p></div>
+      </div>
+      <div class="card">
+        <h3>Boleta de retorno</h3>
+        <div class="pad">
+          <div class="grid4">
+            <div><label>N° de retorno</label><input value="R-0119"></div>
+            <div><label>Área</label><select><option>Lavandería</option><option>Diseño</option><option>Acabados</option></select></div>
+            <div><label>Fecha</label><input value="22/07/2026"></div>
+            <div><label>Entrega</label><select><option>Rosa Quispe</option></select></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>¿Qué llegó? <em>Cantidad total, sin importar de qué boleta salió</em></h3>
+        <table>
+          <thead><tr><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Pendiente del área</th><th class="r">Llega ahora</th><th></th></tr></thead>
+          <tbody id="entrada"></tbody>
+        </table>
+        <div class="pad" style="border-top:1px solid var(--line)">
+          <div class="grid3" style="align-items:end">
+            <div><label>Agregar otro producto</label><input placeholder="modelo, talla o color…"></div>
+            <div><label>Variante</label><select><option>Talla M · Blanco</option></select></div>
+            <div><button class="btn ghost" style="width:100%">Agregar a la devolución</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Vista previa del reparto <em>Se salda primero la boleta más antigua · puedes corregir cualquier cantidad</em></h3>
+        <div id="preview"></div>
+        <div id="aviso"></div>
+        <div class="foot">
+          <span class="resumen" id="resumen"></span>
+          <div style="display:flex;gap:10px">
+            <button class="btn ghost" data-go="salidas">Cancelar</button>
+            <button class="btn" data-go="retornos">Guardar devolución</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== RETORNOS ===== -->
+    <section class="view" id="retornos">
+      <div class="head">
+        <div><h2>Retornos</h2><p>Boletas que emiten las áreas al devolver. Una puede saldar varias salidas a la vez.</p></div>
+        <button class="btn" data-go="devolver">Registrar devolución</button>
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Retorno</th><th>Área</th><th>Entregó</th><th>Fecha</th><th class="r">Prendas</th><th>Aplicado a</th><th class="r">Sin ubicar</th></tr></thead>
+          <tbody>
+            <tr><td class="num">R-0118</td><td>Lavandería</td><td>Rosa Quispe</td><td class="num">21/07</td><td class="r num">28</td><td class="sku">B-0451, B-0453</td><td class="r num cero">0</td></tr>
+            <tr><td class="num">R-0112</td><td>Lavandería</td><td>Rosa Quispe</td><td class="num">20/07</td><td class="r num">34</td><td class="sku">B-0451, B-0453</td><td class="r num" style="color:#E3B95F">2</td></tr>
+            <tr><td class="num">R-0109</td><td>Acabados</td><td>Elena Ramos</td><td class="num">16/07</td><td class="r num">72</td><td class="sku">B-0450</td><td class="r num cero">0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Prendas sin ubicar <em>Llegaron de más; no se asignaron a ninguna boleta</em></h3>
+        <table>
+          <thead><tr><th>Retorno</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Cantidad</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="num">R-0112</td><td>BLUSA SORELLA</td><td>M</td><td>Blanco</td><td class="r num" style="color:#E3B95F">2</td><td class="r"><button class="btn ghost sm">Asignar a boleta</button></td></tr>
+          </tbody>
+        </table>
+        <p class="note">Se guardan para que las revises sin trabar la operación del día.</p>
+      </div>
+    </section>
+
+    <!-- ===== PENDIENTES ===== -->
+    <section class="view" id="pendientes">
+      <div class="head">
+        <div><h2>Pendientes</h2><p>Todo lo que salió del almacén y todavía no regresa.</p></div>
+        <button class="btn ghost">Exportar a Excel</button>
+      </div>
+      <div class="card">
+        <div class="pad" style="border-bottom:1px solid var(--line)">
+          <div class="grid3">
+            <div><label>Área</label><select><option>Todas</option><option>Lavandería</option><option>Diseño</option><option>Acabados</option></select></div>
+            <div><label>Encargado</label><select><option>Todos</option><option>Rosa Quispe</option></select></div>
+            <div><label>Desde</label><input value="01/07/2026"></div>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Boleta</th><th>Área</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Salió</th><th class="r">Devuelto</th><th class="r">Falta</th><th class="r">Días</th></tr></thead>
+          <tbody>
+            <tr><td class="num">B-0451</td><td>Lavandería</td><td>POLO PERRY JHAN</td><td>S</td><td>Rojo</td><td class="r num">14</td><td class="r num">10</td><td class="r num falta">4</td><td class="r num">12</td></tr>
+            <tr><td class="num">B-0452</td><td>Diseño</td><td>VESTIDO SFIDA</td><td>L</td><td>Negro</td><td class="r num">40</td><td class="r num cero">0</td><td class="r num falta">40</td><td class="r num">8</td></tr>
+            <tr><td class="num">B-0453</td><td>Lavandería</td><td>VESTIDO SFIDA</td><td>L</td><td>Negro</td><td class="r num">32</td><td class="r num">10</td><td class="r num falta">22</td><td class="r num">4</td></tr>
+            <tr><td class="num">B-0453</td><td>Lavandería</td><td>JEAN INVESTOR</td><td>28</td><td>Azul</td><td class="r num">20</td><td class="r num">10</td><td class="r num falta">10</td><td class="r num">4</td></tr>
+            <tr><td class="num">B-0453</td><td>Lavandería</td><td>POLO PERRY JHAN</td><td>S</td><td>Rojo</td><td class="r num">10</td><td class="r num cero">0</td><td class="r num falta">10</td><td class="r num">4</td></tr>
+          </tbody>
+        </table>
+        <p class="note">5 líneas abiertas · <span class="falta">86 prendas sin devolver</span></p>
+      </div>
+      <div class="card">
+        <h3>Saldo por área <em>Cuánto debe cada área en total, sin mirar boletas</em></h3>
+        <table>
+          <thead><tr><th>Área</th><th class="r">Boletas abiertas</th><th class="r">Prendas debiendo</th><th class="r">Más antigua</th></tr></thead>
+          <tbody>
+            <tr><td>Lavandería</td><td class="r num">2</td><td class="r num falta">46</td><td class="r num">12 días</td></tr>
+            <tr><td>Diseño</td><td class="r num">1</td><td class="r num falta">40</td><td class="r num">8 días</td></tr>
+            <tr><td>Acabados</td><td class="r num">0</td><td class="r num cero">0</td><td class="r num">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== MAESTROS ===== -->
+    <section class="view" id="maestros">
+      <div class="head">
+        <div><h2>Maestros</h2><p>Catálogo base. Cada combinación modelo + talla + color es un producto distinto.</p></div>
+        <button class="btn ghost">Importar desde Excel</button>
+      </div>
+      <div class="card">
+        <h3>Productos</h3>
+        <table>
+          <thead><tr><th>Modelo</th><th>Talla</th><th>Color</th><th>SKU</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>BLUSA SORELLA</td><td>M</td><td>Blanco</td><td class="sku num">BLUSA-SORELLA|M|BLANCO</td><td class="r"><button class="btn ghost sm">Editar</button></td></tr>
+            <tr><td>VESTIDO SFIDA</td><td>L</td><td>Negro</td><td class="sku num">VESTIDO-SFIDA|L|NEGRO</td><td class="r"><button class="btn ghost sm">Editar</button></td></tr>
+            <tr><td>JEAN INVESTOR</td><td>28</td><td>Azul</td><td class="sku num">JEAN-INVESTOR|28|AZUL</td><td class="r"><button class="btn ghost sm">Editar</button></td></tr>
+            <tr><td>POLO PERRY JHAN</td><td>S</td><td>Rojo</td><td class="sku num">POLO-PERRY-JHAN|S|ROJO</td><td class="r"><button class="btn ghost sm">Editar</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Áreas y encargados</h3>
+        <table>
+          <thead><tr><th>Área</th><th>Encargado</th><th class="r">Boletas abiertas</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>Lavandería</td><td>Rosa Quispe</td><td class="r num">2</td><td class="r"><button class="btn ghost sm">Editar</button></td></tr>
+            <tr><td>Diseño</td><td>Marco Ttito</td><td class="r num">1</td><td class="r"><button class="btn ghost sm">Editar</button></td></tr>
+            <tr><td>Acabados</td><td>Elena Ramos</td><td class="r num">0</td><td class="r"><button class="btn ghost sm">Editar</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== AJUSTES ===== -->
+    <section class="view" id="ajustes">
+      <div class="head"><div><h2>Ajustes</h2><p>Datos y respaldo. Todo vive en esta computadora.</p></div></div>
+      <div class="card">
+        <h3>Respaldo</h3>
+        <div class="pad">
+          <p style="color:var(--muted);font-size:13px;margin-bottom:14px">Último respaldo automático: <b class="num" style="color:var(--text)">22/07/2026 08:12</b> · se conservan los últimos 30 días.</p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn">Crear respaldo ahora</button>
+            <button class="btn ghost">Abrir carpeta de datos</button>
+            <button class="btn ghost">Restaurar desde archivo</button>
+          </div>
+        </div>
+        <p class="note">Recomendación: una vez al mes copia la carpeta de respaldos a una USB o a Drive.</p>
+      </div>
+      <div class="card">
+        <h3>Integridad</h3>
+        <div class="pad">
+          <p style="color:var(--muted);font-size:13px;margin-bottom:14px">Verifica que lo devuelto acumulado cuadre con el detalle de cada retorno.</p>
+          <button class="btn ghost">Verificar ahora</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+/* ---------- navegación ---------- */
+document.addEventListener('click', e=>{
+  const el = e.target.closest('[data-go]');
+  if(!el) return;
+  const id = el.getAttribute('data-go');
+  document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on', v.id===id));
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('on', b.getAttribute('data-go')===id));
+  window.scrollTo(0,0);
+});
+
+/* ---------- reparto FIFO ---------- */
+const productos = [
+  { nombre:"VESTIDO SFIDA", talla:"L", color:"Negro", llega:20, boletas:[
+      { num:"B-0451", fecha:"10/07", pendiente:14 },
+      { num:"B-0453", fecha:"18/07", pendiente:32 }]},
+  { nombre:"BLUSA SORELLA", talla:"M", color:"Blanco", llega:24, boletas:[
+      { num:"B-0451", fecha:"10/07", pendiente:24 }]},
+  { nombre:"JEAN INVESTOR", talla:"28", color:"Azul", llega:15, boletas:[
+      { num:"B-0453", fecha:"18/07", pendiente:10 }]}
+];
+
+function repartir(p){
+  let restante = p.llega, filas = [];
+  p.boletas.forEach((b,i)=>{
+    let a = (p.manual && p.manual[i]!==undefined)
+      ? Math.min(p.manual[i], b.pendiente, restante)
+      : Math.min(b.pendiente, restante);
+    if(a<0||isNaN(a)) a=0;
+    restante -= a;
+    filas.push({...b, asignado:a});
+  });
+  return { filas, excedente: Math.max(restante,0) };
+}
+
+function pintar(){
+  document.getElementById('entrada').innerHTML = productos.map((p,i)=>{
+    const pend = p.boletas.reduce((s,b)=>s+b.pendiente,0);
+    return `<tr>
+      <td>${p.nombre}</td><td>${p.talla}</td><td>${p.color}</td>
+      <td class="r num falta">${pend}</td>
+      <td class="r"><input class="qty" type="number" min="0" value="${p.llega}" data-p="${i}"></td>
+      <td class="r"><button class="btn ghost sm" data-del="${i}">Quitar</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:26px">Agrega los productos que trae el área.</td></tr>`;
+
+  let totalLlega=0, totalExced=0;
+  const tocadas = new Set(), cerradasPorLinea = {};
+
+  document.getElementById('preview').innerHTML = productos.map((p,pi)=>{
+    const { filas, excedente } = repartir(p);
+    totalLlega += p.llega; totalExced += excedente;
+
+    const rows = filas.map((f,fi)=>{
+      if(f.asignado>0) tocadas.add(f.num);
+      const queda = f.pendiente - f.asignado;
+      cerradasPorLinea[f.num] = (cerradasPorLinea[f.num] ?? true) && queda===0;
+      const editado = p.manual && p.manual[fi]!==undefined;
+      return `<div class="alloc">
+        <span class="bol">${f.num}</span><span class="fch">${f.fecha}</span>
+        <input class="qty" type="number" min="0" max="${f.pendiente}" value="${f.asignado}" data-p="${pi}" data-b="${fi}">
+        <span class="est">de ${f.pendiente} pendientes ·
+          ${queda===0 && f.asignado>0 ? '<span class="cierra">línea saldada</span>' : `<span class="queda">quedan ${queda}</span>`}
+          ${editado ? '<span class="manual">corregido</span>' : ''}</span>
+      </div>`;
+    }).join('');
+
+    const exc = excedente>0 ? `<div class="alloc excede">
+        <span class="bol">Sin ubicar</span><span class="fch">—</span>
+        <span class="num" style="width:72px;text-align:right;padding:9px 11px">${excedente}</span>
+        <span class="est">llegaron más prendas de las que estaban pendientes</span></div>` : '';
+
+    return `<div class="prod">
+      <div class="prod-h"><b>${p.nombre} · ${p.talla} · ${p.color}</b><span class="num">llegan ${p.llega}</span></div>
+      ${rows}${exc}</div>`;
+  }).join('') || `<div class="pad" style="color:var(--muted);text-align:center;padding:26px">Sin productos que repartir.</div>`;
+
+  document.getElementById('aviso').innerHTML = totalExced>0
+    ? `<div class="aviso"><b>${totalExced} prendas sin ubicar.</b> Llegaron más de las que el área tenía pendientes. Se guardan como excedente para revisarlas después; no se asignan a ninguna boleta.</div>` : '';
+
+  const cierran = Object.keys(cerradasPorLinea).filter(n=>cerradasPorLinea[n] && tocadas.has(n));
+  document.getElementById('resumen').innerHTML =
+    `Llegan <b class="num" style="color:var(--text)">${totalLlega}</b> prendas · afecta ${tocadas.size} boleta${tocadas.size===1?'':'s'}` +
+    (cierran.length ? ` · <span class="tag t-comp">${cierran.join(', ')} pasa a Completo</span>` : '');
+}
+
+document.addEventListener('input', e=>{
+  const t = e.target;
+  if(t.dataset.b !== undefined){
+    const p = productos[t.dataset.p];
+    p.manual = p.manual || {};
+    p.manual[t.dataset.b] = parseInt(t.value||0,10);
+  } else if(t.dataset.p !== undefined){
+    const p = productos[t.dataset.p];
+    p.llega = parseInt(t.value||0,10);
+    p.manual = {};
+  } else return;
+  pintar();
+});
+
+document.addEventListener('click', e=>{
+  const b = e.target.closest('[data-del]');
+  if(!b) return;
+  productos.splice(+b.dataset.del,1);
+  pintar();
+});
+
+pintar();
+</script>
+</body>
+</html>

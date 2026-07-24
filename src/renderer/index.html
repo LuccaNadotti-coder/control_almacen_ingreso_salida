@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>SFIDA · Salidas y Devoluciones</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="brand"><h1>SFIDA</h1><span>Almacén · v0</span></div>
+    <nav class="nav">
+      <span class="sep">OPERACIÓN</span>
+      <button data-go="salidas">Salidas</button>
+      <button data-go="nueva">Nueva salida</button>
+      <button data-go="devolver">Registrar devolución</button>
+      <button data-go="retornos">Retornos</button>
+      <span class="sep">REPORTES</span>
+      <button data-go="pendientes">Pendientes</button>
+      <span class="sep">SISTEMA</span>
+      <button class="on" data-go="maestros">Maestros</button>
+      <button data-go="ajustes">Ajustes</button>
+    </nav>
+  </aside>
+
+  <main id="main">
+
+    <section class="view" id="salidas"></section>
+    <section class="view" id="nueva"></section>
+    <section class="view" id="devolver"></section>
+    <section class="view" id="retornos"></section>
+    <section class="view" id="pendientes"></section>
+    <section class="view on" id="maestros"></section>
+    <section class="view" id="ajustes"></section>
+
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
