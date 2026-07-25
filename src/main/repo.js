@@ -364,20 +364,38 @@ function obtenerDetalleBoleta(id) {
     .all(id)
     .map((it) => ({ ...it, cantidad_falta: it.cantidad_salida - it.cantidad_devuelta }));
 
-  const retornos = db
+  const asignacionesRetornos = db
     .prepare(
-      `SELECT r.id, r.numero, r.fecha,
-              SUM(a.cantidad) AS aplicado_aqui,
+      `SELECT r.id AS retorno_id, r.numero, r.fecha, a.cantidad,
+              p.modelo, p.talla, p.color,
               (SELECT SUM(ri2.cantidad_total) FROM retorno_items ri2 WHERE ri2.retorno_id = r.id) AS total_retorno
        FROM asignaciones a
        JOIN boleta_items bi ON bi.id = a.boleta_item_id
        JOIN retorno_items ri ON ri.id = a.retorno_item_id
        JOIN retornos r ON r.id = ri.retorno_id
+       JOIN productos p ON p.id = ri.producto_id
        WHERE bi.boleta_id = ?
-       GROUP BY r.id
        ORDER BY r.fecha, r.id`
     )
     .all(id);
+
+  const retornosPorId = new Map();
+  for (const fila of asignacionesRetornos) {
+    if (!retornosPorId.has(fila.retorno_id)) {
+      retornosPorId.set(fila.retorno_id, {
+        id: fila.retorno_id,
+        numero: fila.numero,
+        fecha: fila.fecha,
+        total_retorno: fila.total_retorno,
+        aplicado_aqui: 0,
+        detalle: [],
+      });
+    }
+    const r = retornosPorId.get(fila.retorno_id);
+    r.aplicado_aqui += fila.cantidad;
+    r.detalle.push({ modelo: fila.modelo, talla: fila.talla, color: fila.color, cantidad: fila.cantidad });
+  }
+  const retornos = [...retornosPorId.values()];
 
   return {
     boleta,
@@ -537,6 +555,407 @@ function anularBoleta(id, motivo) {
   return obtenerDetalleBoleta(id);
 }
 
+// ---------------------------------------------------------------------------
+// Retornos y reparto FIFO
+// ---------------------------------------------------------------------------
+
+function buscarRetornoDuplicado(db, numero, excluirId) {
+  const clave = paraComparar(numero);
+  const retornos = db.prepare('SELECT id, numero FROM retornos').all();
+  return retornos.find((r) => {
+    if (excluirId && r.id === excluirId) return false;
+    return paraComparar(r.numero) === clave;
+  });
+}
+
+function recalcularEstadoBoleta(db, boletaId) {
+  const items = db.prepare('SELECT cantidad_salida, cantidad_devuelta FROM boleta_items WHERE boleta_id = ?').all(boletaId);
+  const totalDevuelto = items.reduce((s, it) => s + it.cantidad_devuelta, 0);
+  let estado;
+  if (totalDevuelto <= 0) estado = 'pendiente';
+  else if (items.every((it) => it.cantidad_devuelta >= it.cantidad_salida)) estado = 'completo';
+  else estado = 'parcial';
+  db.prepare('UPDATE boletas SET estado = ? WHERE id = ?').run(estado, boletaId);
+}
+
+// FIFO: pendientes de un producto en un área, boletas no anuladas, más antigua primero.
+function obtenerPendientesFIFO(db, areaId, productoId) {
+  return db
+    .prepare(
+      `SELECT bi.id AS boleta_item_id, bi.boleta_id, bi.cantidad_salida, bi.cantidad_devuelta,
+              b.numero, b.fecha_salida
+       FROM boleta_items bi
+       JOIN boletas b ON b.id = bi.boleta_id
+       WHERE b.area_id = ? AND b.anulada = 0 AND bi.producto_id = ?
+         AND bi.cantidad_salida > bi.cantidad_devuelta
+       ORDER BY b.fecha_salida ASC, b.id ASC`
+    )
+    .all(areaId, productoId);
+}
+
+// Algoritmo de reparto FIFO con corrección manual opcional por línea.
+// estricto=true (guardado): una corrección manual que supere el pendiente real rechaza toda la operación.
+// estricto=false (vista previa): la corrección se recorta silenciosamente, solo para mostrar.
+function calcularLineasReparto(pendientes, cantidadLlega, manualProducto, { estricto = false } = {}) {
+  let restante = cantidadLlega;
+  const lineas = [];
+  for (const p of pendientes) {
+    const pendiente = p.cantidad_salida - p.cantidad_devuelta;
+    const manualVal = manualProducto[String(p.boleta_item_id)];
+    let asignado;
+    let editado = false;
+    if (manualVal !== undefined && manualVal !== null && manualVal !== '') {
+      editado = true;
+      const mv = Number(manualVal);
+      if (!Number.isFinite(mv) || mv < 0) {
+        if (estricto) throw new Error('Una de las cantidades corregidas manualmente no es válida.');
+        asignado = 0;
+      } else {
+        asignado = Math.min(mv, restante);
+        if (asignado > pendiente) {
+          if (estricto) throw new Error('No puedes asignar más prendas de las que están pendientes en una boleta.');
+          asignado = pendiente;
+        }
+      }
+    } else {
+      asignado = Math.max(0, Math.min(pendiente, restante));
+    }
+    restante -= asignado;
+    lineas.push({
+      boletaItemId: p.boleta_item_id,
+      boletaId: p.boleta_id,
+      numero: p.numero,
+      fechaSalida: p.fecha_salida,
+      pendiente,
+      asignado,
+      queda: pendiente - asignado,
+      editado,
+    });
+  }
+  return { lineas, excedente: Math.max(restante, 0) };
+}
+
+function previsualizarRetorno({ areaId, items, manual }) {
+  const db = getDb();
+  const areaIdNum = Number(areaId);
+  if (!Number.isInteger(areaIdNum) || areaIdNum <= 0) throw new Error('Selecciona un área válida.');
+  if (!Array.isArray(items)) throw new Error('Lista de productos inválida.');
+
+  const manualSeguro = manual && typeof manual === 'object' ? manual : {};
+  const productos = [];
+  let totalLlega = 0;
+  let totalExcedente = 0;
+  const asignadoPorBoletaItem = new Map();
+
+  for (const it of items) {
+    const productoId = Number(it && it.productoId);
+    const cantidadLlega = Number(it && it.cantidad);
+    if (!Number.isInteger(productoId) || productoId <= 0) continue;
+    if (!Number.isInteger(cantidadLlega) || cantidadLlega < 0) continue;
+
+    const producto = db.prepare('SELECT id, modelo, talla, color FROM productos WHERE id = ?').get(productoId);
+    if (!producto) continue;
+
+    const pendientes = obtenerPendientesFIFO(db, areaIdNum, productoId);
+    const manualProducto = manualSeguro[String(productoId)] || {};
+    const { lineas, excedente } = calcularLineasReparto(pendientes, cantidadLlega, manualProducto, { estricto: false });
+
+    for (const l of lineas) {
+      if (l.asignado > 0) {
+        asignadoPorBoletaItem.set(l.boletaItemId, (asignadoPorBoletaItem.get(l.boletaItemId) || 0) + l.asignado);
+      }
+    }
+
+    totalLlega += cantidadLlega;
+    totalExcedente += excedente;
+
+    productos.push({
+      productoId,
+      modelo: producto.modelo,
+      talla: producto.talla,
+      color: producto.color,
+      cantidadLlega,
+      pendienteTotal: pendientes.reduce((s, p) => s + (p.cantidad_salida - p.cantidad_devuelta), 0),
+      lineas,
+      excedente,
+    });
+  }
+
+  const boletaIdsTocadas = new Set();
+  for (const p of productos) {
+    for (const l of p.lineas) if (l.asignado > 0) boletaIdsTocadas.add(l.boletaId);
+  }
+
+  const boletasQueCierran = [];
+  for (const boletaId of boletaIdsTocadas) {
+    const itemsBoleta = db.prepare('SELECT id, cantidad_salida, cantidad_devuelta FROM boleta_items WHERE boleta_id = ?').all(boletaId);
+    const todasSaldadas = itemsBoleta.every((itb) => {
+      const pend = itb.cantidad_salida - itb.cantidad_devuelta;
+      const asig = asignadoPorBoletaItem.get(itb.id) || 0;
+      return pend - asig <= 0;
+    });
+    if (todasSaldadas) {
+      const b = db.prepare('SELECT numero FROM boletas WHERE id = ?').get(boletaId);
+      boletasQueCierran.push({ boletaId, numero: b.numero });
+    }
+  }
+
+  return {
+    productos,
+    resumen: {
+      totalLlega,
+      totalExcedente,
+      boletasTocadas: boletaIdsTocadas.size,
+      boletasQueCierran,
+    },
+  };
+}
+
+function obtenerDetalleRetorno(id) {
+  const db = getDb();
+  const retorno = db
+    .prepare(
+      `SELECT r.*, a.nombre AS area_nombre, e.nombre AS encargado_nombre
+       FROM retornos r
+       JOIN areas a ON a.id = r.area_id
+       LEFT JOIN encargados e ON e.id = r.encargado_id
+       WHERE r.id = ?`
+    )
+    .get(id);
+  if (!retorno) throw new Error('El retorno no existe.');
+
+  const items = db
+    .prepare(
+      `SELECT ri.id, ri.producto_id, ri.cantidad_total, p.modelo, p.talla, p.color,
+              COALESCE((SELECT SUM(cantidad) FROM asignaciones WHERE retorno_item_id = ri.id), 0) AS asignado
+       FROM retorno_items ri
+       JOIN productos p ON p.id = ri.producto_id
+       WHERE ri.retorno_id = ?
+       ORDER BY p.modelo, p.talla, p.color`
+    )
+    .all(id)
+    .map((it) => ({ ...it, sin_ubicar: it.cantidad_total - it.asignado }));
+
+  return { retorno, items };
+}
+
+function crearRetorno({ numero, areaId, encargadoId, fecha, observacion, items, manual }) {
+  const db = getDb();
+  const n = normalizarTexto(numero);
+  if (!n) throw new Error('El número de retorno es obligatorio.');
+  if (buscarRetornoDuplicado(db, n)) {
+    throw new Error(`Ya existe un retorno con el número "${n}".`);
+  }
+
+  const areaIdNum = Number(areaId);
+  if (!Number.isInteger(areaIdNum) || areaIdNum <= 0) throw new Error('Selecciona un área válida.');
+  const area = db.prepare('SELECT id FROM areas WHERE id = ? AND activo = 1').get(areaIdNum);
+  if (!area) throw new Error('El área indicada no existe o está inactiva.');
+
+  let encargadoIdNum = null;
+  if (encargadoId !== null && encargadoId !== undefined && encargadoId !== '') {
+    encargadoIdNum = Number(encargadoId);
+    if (!Number.isInteger(encargadoIdNum) || encargadoIdNum <= 0) throw new Error('El encargado indicado es inválido.');
+    const encargado = db
+      .prepare('SELECT id FROM encargados WHERE id = ? AND area_id = ? AND activo = 1')
+      .get(encargadoIdNum, areaIdNum);
+    if (!encargado) {
+      throw new Error('El encargado indicado no existe, no pertenece al área seleccionada o está inactivo.');
+    }
+  }
+
+  const f = validarFecha(fecha);
+
+  if (!Array.isArray(items) || items.length === 0) throw new Error('Agrega al menos un producto a la devolución.');
+  const combinados = new Map();
+  for (const it of items) {
+    const productoId = Number(it && it.productoId);
+    const cantidad = Number(it && it.cantidad);
+    if (!Number.isInteger(productoId) || productoId <= 0) throw new Error('Uno de los productos de la devolución es inválido.');
+    if (!Number.isInteger(cantidad) || cantidad <= 0) throw new Error('La cantidad de cada producto debe ser un entero mayor a 0.');
+    combinados.set(productoId, (combinados.get(productoId) || 0) + cantidad);
+  }
+  for (const productoId of combinados.keys()) {
+    const producto = db.prepare('SELECT id FROM productos WHERE id = ?').get(productoId);
+    if (!producto) throw new Error('Uno de los productos seleccionados no existe.');
+  }
+
+  const obs = observacion == null ? null : String(observacion).trim() || null;
+  const manualSeguro = manual && typeof manual === 'object' ? manual : {};
+
+  return transaccion(db, () => {
+    const infoRetorno = db
+      .prepare(
+        `INSERT INTO retornos (numero, area_id, encargado_id, fecha, observacion, creado_en)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(n, areaIdNum, encargadoIdNum, f, obs, new Date().toISOString());
+    const retornoId = infoRetorno.lastInsertRowid;
+
+    const stmtItem = db.prepare('INSERT INTO retorno_items (retorno_id, producto_id, cantidad_total) VALUES (?, ?, ?)');
+    const stmtAsig = db.prepare(
+      'INSERT INTO asignaciones (retorno_item_id, boleta_item_id, cantidad, automatica) VALUES (?, ?, ?, ?)'
+    );
+    const boletasAfectadas = new Set();
+
+    for (const [productoId, cantidadLlega] of combinados) {
+      const infoItem = stmtItem.run(retornoId, productoId, cantidadLlega);
+      const retornoItemId = infoItem.lastInsertRowid;
+
+      // Rule 3: releer el pendiente real de la base, no confiar en la vista previa del renderer.
+      const pendientes = obtenerPendientesFIFO(db, areaIdNum, productoId);
+      const manualProducto = manualSeguro[String(productoId)] || {};
+      const { lineas } = calcularLineasReparto(pendientes, cantidadLlega, manualProducto, { estricto: true });
+
+      for (const l of lineas) {
+        if (l.asignado <= 0) continue;
+        stmtAsig.run(retornoItemId, l.boletaItemId, l.asignado, l.editado ? 0 : 1);
+        db.prepare('UPDATE boleta_items SET cantidad_devuelta = cantidad_devuelta + ? WHERE id = ?').run(l.asignado, l.boletaItemId);
+        boletasAfectadas.add(l.boletaId);
+      }
+      // El restante (excedente) no se guarda en ningún lado: queda implícito
+      // como la diferencia entre cantidad_total y la suma de asignaciones.
+    }
+
+    for (const boletaId of boletasAfectadas) recalcularEstadoBoleta(db, boletaId);
+
+    return obtenerDetalleRetorno(retornoId);
+  });
+}
+
+function listarRetornos() {
+  const db = getDb();
+  const base = db
+    .prepare(
+      `SELECT r.id, r.numero, r.fecha, r.anulado, r.motivo_anulacion,
+              a.nombre AS area_nombre, e.nombre AS encargado_nombre,
+              COALESCE(SUM(ri.cantidad_total), 0) AS total_prendas
+       FROM retornos r
+       JOIN areas a ON a.id = r.area_id
+       LEFT JOIN encargados e ON e.id = r.encargado_id
+       LEFT JOIN retorno_items ri ON ri.retorno_id = r.id
+       GROUP BY r.id
+       ORDER BY r.fecha DESC, r.id DESC`
+    )
+    .all();
+
+  const stmtAplicado = db.prepare(
+    `SELECT DISTINCT b.numero
+     FROM asignaciones asg
+     JOIN retorno_items ri ON ri.id = asg.retorno_item_id
+     JOIN boleta_items bi ON bi.id = asg.boleta_item_id
+     JOIN boletas b ON b.id = bi.boleta_id
+     WHERE ri.retorno_id = ?
+     ORDER BY b.numero`
+  );
+  const stmtAsignado = db.prepare(
+    `SELECT COALESCE(SUM(asg.cantidad), 0) AS asignado
+     FROM asignaciones asg
+     JOIN retorno_items ri ON ri.id = asg.retorno_item_id
+     WHERE ri.retorno_id = ?`
+  );
+
+  return base.map((r) => {
+    const aplicadoA = stmtAplicado.all(r.id).map((row) => row.numero);
+    const asignado = stmtAsignado.get(r.id).asignado;
+    return { ...r, aplicado_a: aplicadoA, sin_ubicar: r.total_prendas - asignado };
+  });
+}
+
+function listarPendientesSinUbicar() {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT ri.id AS retorno_item_id, r.id AS retorno_id, r.numero AS retorno_numero, r.fecha,
+              r.area_id, a.nombre AS area_nombre,
+              ri.producto_id, p.modelo, p.talla, p.color, ri.cantidad_total,
+              COALESCE((SELECT SUM(cantidad) FROM asignaciones WHERE retorno_item_id = ri.id), 0) AS asignado
+       FROM retorno_items ri
+       JOIN retornos r ON r.id = ri.retorno_id
+       JOIN areas a ON a.id = r.area_id
+       JOIN productos p ON p.id = ri.producto_id
+       WHERE r.anulado = 0
+       ORDER BY r.fecha, r.id`
+    )
+    .all()
+    .map((row) => ({ ...row, sin_ubicar: row.cantidad_total - row.asignado }))
+    .filter((row) => row.sin_ubicar > 0);
+}
+
+function pendientesPorProducto({ areaId, productoId }) {
+  const db = getDb();
+  const areaIdNum = Number(areaId);
+  const productoIdNum = Number(productoId);
+  if (!Number.isInteger(areaIdNum) || areaIdNum <= 0) throw new Error('Área inválida.');
+  if (!Number.isInteger(productoIdNum) || productoIdNum <= 0) throw new Error('Producto inválido.');
+  return obtenerPendientesFIFO(db, areaIdNum, productoIdNum).map((p) => ({
+    boletaItemId: p.boleta_item_id,
+    boletaId: p.boleta_id,
+    numero: p.numero,
+    fechaSalida: p.fecha_salida,
+    pendiente: p.cantidad_salida - p.cantidad_devuelta,
+  }));
+}
+
+function asignarSinUbicar({ retornoItemId, boletaItemId, cantidad }) {
+  const db = getDb();
+  const retornoItemIdNum = Number(retornoItemId);
+  const boletaItemIdNum = Number(boletaItemId);
+  const cantidadNum = Number(cantidad);
+  if (!Number.isInteger(retornoItemIdNum) || retornoItemIdNum <= 0) throw new Error('Línea de retorno inválida.');
+  if (!Number.isInteger(boletaItemIdNum) || boletaItemIdNum <= 0) throw new Error('Línea de boleta inválida.');
+  if (!Number.isInteger(cantidadNum) || cantidadNum <= 0) throw new Error('La cantidad a asignar debe ser un entero mayor a 0.');
+
+  return transaccion(db, () => {
+    const retornoItem = db
+      .prepare(
+        `SELECT ri.id, ri.producto_id, ri.cantidad_total, r.id AS retorno_id, r.area_id, r.anulado
+         FROM retorno_items ri
+         JOIN retornos r ON r.id = ri.retorno_id
+         WHERE ri.id = ?`
+      )
+      .get(retornoItemIdNum);
+    if (!retornoItem) throw new Error('La línea de retorno no existe.');
+    if (retornoItem.anulado) throw new Error('El retorno está anulado.');
+
+    const asignadoActual = db
+      .prepare('SELECT COALESCE(SUM(cantidad), 0) AS n FROM asignaciones WHERE retorno_item_id = ?')
+      .get(retornoItemIdNum).n;
+    const sinUbicar = retornoItem.cantidad_total - asignadoActual;
+    if (cantidadNum > sinUbicar) {
+      throw new Error(`Solo quedan ${sinUbicar} prenda(s) sin ubicar en esta línea.`);
+    }
+
+    const boletaItem = db
+      .prepare(
+        `SELECT bi.id, bi.producto_id, bi.cantidad_salida, bi.cantidad_devuelta, b.id AS boleta_id, b.area_id, b.anulada
+         FROM boleta_items bi
+         JOIN boletas b ON b.id = bi.boleta_id
+         WHERE bi.id = ?`
+      )
+      .get(boletaItemIdNum);
+    if (!boletaItem) throw new Error('La línea de boleta no existe.');
+    if (boletaItem.anulada) throw new Error('Esa boleta está anulada.');
+    if (boletaItem.producto_id !== retornoItem.producto_id) {
+      throw new Error('El producto de la boleta no coincide con el producto sin ubicar.');
+    }
+    if (boletaItem.area_id !== retornoItem.area_id) {
+      throw new Error('La boleta no pertenece a la misma área del retorno.');
+    }
+    const pendiente = boletaItem.cantidad_salida - boletaItem.cantidad_devuelta;
+    if (cantidadNum > pendiente) {
+      throw new Error(`Solo hay ${pendiente} prenda(s) pendiente(s) en esa boleta.`);
+    }
+
+    db.prepare('INSERT INTO asignaciones (retorno_item_id, boleta_item_id, cantidad, automatica) VALUES (?, ?, ?, 0)')
+      .run(retornoItemIdNum, boletaItemIdNum, cantidadNum);
+    db.prepare('UPDATE boleta_items SET cantidad_devuelta = cantidad_devuelta + ? WHERE id = ?').run(cantidadNum, boletaItemIdNum);
+    recalcularEstadoBoleta(db, boletaItem.boleta_id);
+
+    return { ok: true };
+  });
+}
+
 module.exports = {
   normalizarTexto,
   transaccion,
@@ -552,6 +971,14 @@ module.exports = {
     editar: editarBoleta,
     anular: anularBoleta,
     obtenerDetalle: obtenerDetalleBoleta,
+  },
+  retornos: {
+    listar: listarRetornos,
+    previsualizar: previsualizarRetorno,
+    crear: crearRetorno,
+    pendientesSinUbicar: listarPendientesSinUbicar,
+    pendientesPorProducto,
+    asignarSinUbicar,
   },
   areas: {
     listar: listarAreas,

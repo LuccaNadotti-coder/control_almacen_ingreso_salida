@@ -30,4 +30,12 @@ contextBridge.exposeInMainWorld('api', {
     anular: (id, motivo) => ipcRenderer.invoke('boletas:anular', { id, motivo }),
     obtenerDetalle: (id) => ipcRenderer.invoke('boletas:obtenerDetalle', { id }),
   },
+  retornos: {
+    listar: () => ipcRenderer.invoke('retornos:listar'),
+    previsualizar: (datos) => ipcRenderer.invoke('retornos:previsualizar', datos),
+    crear: (datos) => ipcRenderer.invoke('retornos:crear', datos),
+    pendientesSinUbicar: () => ipcRenderer.invoke('retornos:pendientesSinUbicar'),
+    pendientesPorProducto: (datos) => ipcRenderer.invoke('retornos:pendientesPorProducto', datos),
+    asignarSinUbicar: (datos) => ipcRenderer.invoke('retornos:asignarSinUbicar', datos),
+  },
 });

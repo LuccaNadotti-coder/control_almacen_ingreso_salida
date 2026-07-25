@@ -26,6 +26,13 @@ function registrarHandlers() {
   ipcMain.handle('boletas:editar', (_e, { id, ...datos }) => repo.boletas.editar(id, datos));
   ipcMain.handle('boletas:anular', (_e, { id, motivo }) => repo.boletas.anular(id, motivo));
   ipcMain.handle('boletas:obtenerDetalle', (_e, { id }) => repo.boletas.obtenerDetalle(id));
+
+  ipcMain.handle('retornos:listar', () => repo.retornos.listar());
+  ipcMain.handle('retornos:previsualizar', (_e, datos) => repo.retornos.previsualizar(datos));
+  ipcMain.handle('retornos:crear', (_e, datos) => repo.retornos.crear(datos));
+  ipcMain.handle('retornos:pendientesSinUbicar', () => repo.retornos.pendientesSinUbicar());
+  ipcMain.handle('retornos:pendientesPorProducto', (_e, datos) => repo.retornos.pendientesPorProducto(datos));
+  ipcMain.handle('retornos:asignarSinUbicar', (_e, datos) => repo.retornos.asignarSinUbicar(datos));
 }
 
 module.exports = { registrarHandlers };

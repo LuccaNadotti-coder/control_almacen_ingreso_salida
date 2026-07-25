@@ -66,8 +66,6 @@ function diasDesde(iso) {
 // ---------------------------------------------------------------------------
 
 const PROXIMAMENTE = {
-  devolver: { titulo: 'Registrar devolución', desc: 'El área devuelve prendas mezcladas de varias salidas.' },
-  retornos: { titulo: 'Retornos', desc: 'Boletas que emiten las áreas al devolver.' },
   pendientes: { titulo: 'Pendientes', desc: 'Todo lo que salió del almacén y todavía no regresa.' },
   ajustes: { titulo: 'Ajustes', desc: 'Datos y respaldo. Todo vive en esta computadora.' },
 };
@@ -96,6 +94,10 @@ function irA(id, params) {
     abrirNuevaSalida(params && params.id);
   } else if (id === 'detalle') {
     abrirDetalle(params && params.id);
+  } else if (id === 'devolver') {
+    abrirDevolucion();
+  } else if (id === 'retornos') {
+    refrescarRetornos();
   } else if (!vistasInicializadas.has(id)) {
     pintarProximamente(id);
     vistasInicializadas.add(id);
@@ -518,9 +520,12 @@ function pintarDetalle() {
     </div>` : '';
 
   const retornosHtml = retornos.length
-    ? `<ul class="time">${retornos.map((r) => `
+    ? `<ul class="time">${retornos.map((r) => {
+        const detalle = r.detalle.map((d) => `${escapeHtml(d.modelo)} ${escapeHtml(d.talla)} ${escapeHtml(d.color)} (${d.cantidad})`).join(', ');
+        return `
         <li><b>${escapeHtml(r.numero)} · ${formatoFechaLarga(r.fecha)}</b>
-        <p>Trajo ${r.total_retorno} prendas en total, de las cuales <b>${r.aplicado_aqui}</b> se aplicaron aquí.</p></li>`).join('')}</ul>`
+        <p>Trajo ${r.total_retorno} prendas en total, de las cuales <b>${r.aplicado_aqui}</b> se aplicaron aquí — ${detalle}</p></li>`;
+      }).join('')}</ul>`
     : `<div class="vacio">Todavía no hay retornos que afecten esta boleta.</div>`;
 
   sec.innerHTML = `
@@ -588,6 +593,534 @@ detalleEl.addEventListener('click', async (e) => {
     } catch (err) {
       estadoDetalle.mensaje = { tipo: 'error', texto: mensajeError(err) };
       pintarDetalle();
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// REGISTRAR DEVOLUCIÓN (reparto FIFO)
+// ---------------------------------------------------------------------------
+
+const estadoDevolucion = {
+  numero: '',
+  fecha: '',
+  areaId: '',
+  encargadoId: '',
+  observacion: '',
+  areas: [],
+  encargados: [],
+  productosDisponibles: [],
+  itemsLlegada: [], // [{productoId, modelo, talla, color, cantidad}]
+  manual: {}, // { [productoId]: { [boletaItemId]: cantidadCorregida } }
+  busqueda: '',
+  cantidadTmp: 1,
+  preview: null,
+  mensaje: null,
+  mensajeLinea: null,
+};
+
+async function abrirDevolucion() {
+  try {
+    const [areas, productos] = await Promise.all([
+      window.api.areas.listar(),
+      window.api.productos.listar(),
+    ]);
+    estadoDevolucion.areas = areas;
+    estadoDevolucion.productosDisponibles = productos;
+    estadoDevolucion.numero = '';
+    estadoDevolucion.fecha = fechaHoyISO();
+    estadoDevolucion.areaId = '';
+    estadoDevolucion.encargadoId = '';
+    estadoDevolucion.observacion = '';
+    estadoDevolucion.encargados = [];
+    estadoDevolucion.itemsLlegada = [];
+    estadoDevolucion.manual = {};
+    estadoDevolucion.busqueda = '';
+    estadoDevolucion.cantidadTmp = 1;
+    estadoDevolucion.preview = null;
+    estadoDevolucion.mensaje = null;
+    estadoDevolucion.mensajeLinea = null;
+    pintarDevolucion();
+  } catch (err) {
+    document.getElementById('devolver').innerHTML =
+      `<div class="head"><div><h2>Registrar devolución</h2></div></div><div class="error">${escapeHtml(mensajeError(err))}</div>`;
+  }
+}
+
+function capturarCamposDevolucion() {
+  const campo = (id) => document.getElementById(id);
+  if (campo('dv-numero')) estadoDevolucion.numero = campo('dv-numero').value;
+  if (campo('dv-fecha')) estadoDevolucion.fecha = campo('dv-fecha').value;
+  if (campo('dv-encargado')) estadoDevolucion.encargadoId = campo('dv-encargado').value;
+  if (campo('dv-buscar')) estadoDevolucion.busqueda = campo('dv-buscar').value;
+  if (campo('dv-cantidad')) estadoDevolucion.cantidadTmp = campo('dv-cantidad').value;
+}
+
+let previewRequestId = 0;
+
+async function recalcularPreviewDevolucion() {
+  if (!estadoDevolucion.areaId || estadoDevolucion.itemsLlegada.length === 0) {
+    estadoDevolucion.preview = null;
+    pintarDevolucion();
+    return;
+  }
+  const miId = ++previewRequestId;
+  try {
+    const preview = await window.api.retornos.previsualizar({
+      areaId: Number(estadoDevolucion.areaId),
+      items: estadoDevolucion.itemsLlegada.map((it) => ({ productoId: it.productoId, cantidad: it.cantidad })),
+      manual: estadoDevolucion.manual,
+    });
+    if (miId !== previewRequestId) return;
+    estadoDevolucion.preview = preview;
+  } catch (err) {
+    if (miId !== previewRequestId) return;
+    estadoDevolucion.preview = null;
+    estadoDevolucion.mensaje = { tipo: 'error', texto: mensajeError(err) };
+  }
+  pintarDevolucion();
+}
+
+function pendienteAreaParaProducto(productoId) {
+  if (!estadoDevolucion.preview) return null;
+  const p = estadoDevolucion.preview.productos.find((x) => x.productoId === productoId);
+  return p ? p.pendienteTotal : null;
+}
+
+function opcionesProductosDatalistDevolucion() {
+  return estadoDevolucion.productosDisponibles
+    .map((p) => `<option data-id="${p.id}" value="${escapeHtml(`${p.modelo} · ${p.talla} · ${p.color}`)}"></option>`)
+    .join('');
+}
+
+function filaLlegada(it) {
+  const pendienteArea = pendienteAreaParaProducto(it.productoId);
+  const pendienteTxt = pendienteArea === null ? '…' : pendienteArea;
+  return `
+    <tr>
+      <td>${escapeHtml(it.modelo)}</td>
+      <td>${escapeHtml(it.talla)}</td>
+      <td>${escapeHtml(it.color)}</td>
+      <td class="r num ${pendienteArea > 0 ? 'falta' : 'cero'}">${pendienteTxt}</td>
+      <td class="r"><input class="qty" type="number" min="0" step="1" value="${it.cantidad}" data-llega="${it.productoId}"></td>
+      <td class="r"><button class="btn ghost sm" data-accion="quitar-llegada" data-id="${it.productoId}">Quitar</button></td>
+    </tr>`;
+}
+
+function pintarPreviewReparto() {
+  const preview = estadoDevolucion.preview;
+  if (!preview) {
+    return {
+      preview: '<div class="pad" style="color:var(--muted);text-align:center;padding:26px">Elige un área y agrega productos para ver el reparto.</div>',
+      aviso: '',
+      resumen: 'Agrega productos para calcular el reparto.',
+    };
+  }
+
+  const prodHtml = preview.productos.length
+    ? preview.productos.map((p) => {
+        const rows = p.lineas.map((l) => {
+          const manualRaw = (estadoDevolucion.manual[p.productoId] || {})[l.boletaItemId];
+          const valorInput = manualRaw !== undefined ? manualRaw : l.asignado;
+          return `
+            <div class="alloc">
+              <span class="bol">${escapeHtml(l.numero)}</span><span class="fch">${formatoFechaCorta(l.fechaSalida)}</span>
+              <input class="qty" type="number" min="0" max="${l.pendiente}" value="${escapeHtml(String(valorInput))}" data-producto="${p.productoId}" data-boleta-item="${l.boletaItemId}">
+              <span class="est">de ${l.pendiente} pendientes ·
+                ${l.queda === 0 && l.asignado > 0 ? '<span class="cierra">línea saldada</span>' : `<span class="queda">quedan ${l.queda}</span>`}
+                ${l.editado ? '<span class="manual">corregido</span>' : ''}</span>
+            </div>`;
+        }).join('') || '<div class="est" style="padding:8px 0 0">No hay boletas pendientes de esta área para este producto.</div>';
+
+        const exc = p.excedente > 0 ? `
+          <div class="alloc excede">
+            <span class="bol">Sin ubicar</span><span class="fch">—</span>
+            <span class="num" style="width:72px;text-align:right;padding:9px 11px">${p.excedente}</span>
+            <span class="est">llegaron más prendas de las que estaban pendientes</span>
+          </div>` : '';
+
+        return `
+          <div class="prod">
+            <div class="prod-h"><b>${escapeHtml(p.modelo)} · ${escapeHtml(p.talla)} · ${escapeHtml(p.color)}</b><span class="num">llegan ${p.cantidadLlega}</span></div>
+            ${rows}${exc}
+          </div>`;
+      }).join('')
+    : '<div class="pad" style="color:var(--muted);text-align:center;padding:26px">Sin productos que repartir.</div>';
+
+  const avisoHtml = preview.resumen.totalExcedente > 0
+    ? `<div class="aviso"><b>${preview.resumen.totalExcedente} prendas sin ubicar.</b> Llegaron más de las que el área tenía pendientes. Se guardan como excedente para revisarlas después; no se asignan a ninguna boleta.</div>`
+    : '';
+
+  const cierran = preview.resumen.boletasQueCierran.map((b) => escapeHtml(b.numero));
+  const resumenHtml =
+    `Llegan <b class="num" style="color:var(--text)">${preview.resumen.totalLlega}</b> prendas · afecta ${preview.resumen.boletasTocadas} boleta${preview.resumen.boletasTocadas === 1 ? '' : 's'}` +
+    (cierran.length ? ` · <span class="tag t-comp">${cierran.join(', ')} pasa a Completo</span>` : '');
+
+  return { preview: prodHtml, aviso: avisoHtml, resumen: resumenHtml };
+}
+
+function pintarDevolucion() {
+  const sec = document.getElementById('devolver');
+  const opcionesArea = estadoDevolucion.areas
+    .map((a) => `<option value="${a.id}" ${String(a.id) === String(estadoDevolucion.areaId) ? 'selected' : ''}>${escapeHtml(a.nombre)}</option>`)
+    .join('');
+  const opcionesEncargado = estadoDevolucion.encargados
+    .map((e) => `<option value="${e.id}" ${String(e.id) === String(estadoDevolucion.encargadoId) ? 'selected' : ''}>${escapeHtml(e.nombre)}</option>`)
+    .join('');
+  const filasLlegada = estadoDevolucion.itemsLlegada.length
+    ? estadoDevolucion.itemsLlegada.map(filaLlegada).join('')
+    : `<tr><td colspan="6" class="vacio">Agrega los productos que trae el área.</td></tr>`;
+  const msgLinea = estadoDevolucion.mensajeLinea
+    ? `<div class="error" style="margin:0 18px 16px">${escapeHtml(estadoDevolucion.mensajeLinea)}</div>` : '';
+  const msg = estadoDevolucion.mensaje
+    ? `<div class="${estadoDevolucion.mensaje.tipo}">${escapeHtml(estadoDevolucion.mensaje.texto)}</div>` : '';
+  const { preview: previewHtml, aviso: avisoHtml, resumen: resumenHtml } = pintarPreviewReparto();
+  const hayArea = Boolean(estadoDevolucion.areaId);
+
+  sec.innerHTML = `
+    <div class="head">
+      <div><h2>Registrar devolución</h2><p>El área devuelve prendas mezcladas de varias salidas. Indica solo cuánto llega; el sistema lo reparte contra las boletas más antiguas y tú corriges si hace falta.</p></div>
+    </div>
+    <div class="card">
+      <h3>Boleta de retorno</h3>
+      <div class="pad">
+        <div class="grid4">
+          <div><label>N° de retorno</label><input data-mayus id="dv-numero" value="${escapeHtml(estadoDevolucion.numero)}"></div>
+          <div><label>Área</label><select id="dv-area"><option value="">Selecciona…</option>${opcionesArea}</select></div>
+          <div><label>Fecha</label><input type="date" id="dv-fecha" value="${escapeHtml(estadoDevolucion.fecha)}"></div>
+          <div><label>Entrega</label>
+            <select id="dv-encargado" ${estadoDevolucion.encargados.length ? '' : 'disabled'}>
+              <option value="">${hayArea ? 'Selecciona…' : 'Elige un área primero'}</option>${opcionesEncargado}
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>¿Qué llegó? <em>Cantidad total, sin importar de qué boleta salió</em></h3>
+      <table>
+        <thead><tr><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Pendiente del área</th><th class="r">Llega ahora</th><th></th></tr></thead>
+        <tbody>${filasLlegada}</tbody>
+      </table>
+      <div class="pad" style="border-top:1px solid var(--line)">
+        <div class="grid3" style="align-items:end">
+          <div>
+            <label>Agregar otro producto</label>
+            <input list="dv-productos-lista" id="dv-buscar" placeholder="modelo, talla o color…" value="${escapeHtml(estadoDevolucion.busqueda)}" ${hayArea ? '' : 'disabled'}>
+            <datalist id="dv-productos-lista">${opcionesProductosDatalistDevolucion()}</datalist>
+          </div>
+          <div><label>Cantidad</label><input class="qty" type="number" min="1" step="1" id="dv-cantidad" value="${escapeHtml(String(estadoDevolucion.cantidadTmp))}" ${hayArea ? '' : 'disabled'}></div>
+          <div><button class="btn ghost" style="width:100%" data-accion="agregar-llegada" ${hayArea ? '' : 'disabled'}>Agregar a la devolución</button></div>
+        </div>
+        ${msgLinea}
+      </div>
+    </div>
+    <div class="card">
+      <h3>Vista previa del reparto <em>Se salda primero la boleta más antigua · puedes corregir cualquier cantidad</em></h3>
+      <div id="dv-preview">${previewHtml}</div>
+      <div id="dv-aviso">${avisoHtml}</div>
+      ${msg}
+      <div class="foot">
+        <span class="resumen" id="dv-resumen">${resumenHtml}</span>
+        <div style="display:flex;gap:10px">
+          <button class="btn ghost" data-accion="cancelar-devolucion">Cancelar</button>
+          <button class="btn" data-accion="guardar-devolucion">Guardar devolución</button>
+        </div>
+      </div>
+    </div>`;
+  vincularMayusculasEn(sec);
+}
+
+const devolverEl = document.getElementById('devolver');
+
+devolverEl.addEventListener('change', async (e) => {
+  if (e.target.id === 'dv-area') {
+    capturarCamposDevolucion();
+    estadoDevolucion.areaId = e.target.value;
+    estadoDevolucion.encargadoId = '';
+    estadoDevolucion.itemsLlegada = [];
+    estadoDevolucion.manual = {};
+    estadoDevolucion.preview = null;
+    estadoDevolucion.encargados = estadoDevolucion.areaId
+      ? await window.api.encargados.listar({ areaId: Number(estadoDevolucion.areaId) })
+      : [];
+    pintarDevolucion();
+    return;
+  }
+
+  if (e.target.matches('input[data-llega]')) {
+    capturarCamposDevolucion();
+    const productoId = Number(e.target.getAttribute('data-llega'));
+    const item = estadoDevolucion.itemsLlegada.find((it) => it.productoId === productoId);
+    if (item) {
+      const val = Number(e.target.value);
+      item.cantidad = Number.isFinite(val) && val >= 0 ? val : 0;
+      delete estadoDevolucion.manual[productoId];
+    }
+    await recalcularPreviewDevolucion();
+    return;
+  }
+
+  if (e.target.matches('input[data-producto][data-boleta-item]')) {
+    capturarCamposDevolucion();
+    const productoId = e.target.getAttribute('data-producto');
+    const boletaItemId = e.target.getAttribute('data-boleta-item');
+    const val = e.target.value;
+    if (!estadoDevolucion.manual[productoId]) estadoDevolucion.manual[productoId] = {};
+    if (val === '') delete estadoDevolucion.manual[productoId][boletaItemId];
+    else estadoDevolucion.manual[productoId][boletaItemId] = Number(val);
+    await recalcularPreviewDevolucion();
+  }
+});
+
+devolverEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-accion]');
+  if (!btn) return;
+  const accion = btn.getAttribute('data-accion');
+
+  if (accion === 'agregar-llegada') {
+    capturarCamposDevolucion();
+    const texto = estadoDevolucion.busqueda.trim();
+    const cantidad = Number(estadoDevolucion.cantidadTmp);
+    const producto = estadoDevolucion.productosDisponibles.find(
+      (p) => `${p.modelo} · ${p.talla} · ${p.color}` === texto
+    );
+    if (!producto) {
+      estadoDevolucion.mensajeLinea = 'Selecciona un producto de la lista de sugerencias.';
+      pintarDevolucion();
+      return;
+    }
+    if (!Number.isInteger(cantidad) || cantidad <= 0) {
+      estadoDevolucion.mensajeLinea = 'La cantidad debe ser un entero mayor a 0.';
+      pintarDevolucion();
+      return;
+    }
+    const existente = estadoDevolucion.itemsLlegada.find((it) => it.productoId === producto.id);
+    if (existente) {
+      existente.cantidad += cantidad;
+      delete estadoDevolucion.manual[producto.id];
+    } else {
+      estadoDevolucion.itemsLlegada.push({
+        productoId: producto.id, modelo: producto.modelo, talla: producto.talla, color: producto.color, cantidad,
+      });
+    }
+    estadoDevolucion.busqueda = '';
+    estadoDevolucion.cantidadTmp = 1;
+    estadoDevolucion.mensajeLinea = null;
+    await recalcularPreviewDevolucion();
+    return;
+  }
+
+  if (accion === 'quitar-llegada') {
+    capturarCamposDevolucion();
+    const productoId = Number(btn.getAttribute('data-id'));
+    estadoDevolucion.itemsLlegada = estadoDevolucion.itemsLlegada.filter((it) => it.productoId !== productoId);
+    delete estadoDevolucion.manual[productoId];
+    await recalcularPreviewDevolucion();
+    return;
+  }
+
+  if (accion === 'cancelar-devolucion') {
+    irA('salidas');
+    return;
+  }
+
+  if (accion === 'guardar-devolucion') {
+    capturarCamposDevolucion();
+    estadoDevolucion.mensaje = null;
+    try {
+      await window.api.retornos.crear({
+        numero: estadoDevolucion.numero,
+        areaId: Number(estadoDevolucion.areaId),
+        encargadoId: estadoDevolucion.encargadoId ? Number(estadoDevolucion.encargadoId) : null,
+        fecha: estadoDevolucion.fecha,
+        observacion: estadoDevolucion.observacion,
+        items: estadoDevolucion.itemsLlegada.map((it) => ({ productoId: it.productoId, cantidad: it.cantidad })),
+        manual: estadoDevolucion.manual,
+      });
+      irA('retornos');
+    } catch (err) {
+      estadoDevolucion.mensaje = { tipo: 'error', texto: mensajeError(err) };
+      pintarDevolucion();
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// RETORNOS
+// ---------------------------------------------------------------------------
+
+const estadoRetornos = {
+  retornos: [],
+  sinUbicar: [],
+  error: null,
+  mensaje: null,
+  asignando: null,
+  opcionesAsignar: [],
+  cantidadAsignar: 1,
+  boletaSeleccionada: '',
+};
+
+async function refrescarRetornos() {
+  try {
+    const [retornos, sinUbicar] = await Promise.all([
+      window.api.retornos.listar(),
+      window.api.retornos.pendientesSinUbicar(),
+    ]);
+    estadoRetornos.retornos = retornos;
+    estadoRetornos.sinUbicar = sinUbicar;
+    estadoRetornos.error = null;
+  } catch (err) {
+    estadoRetornos.error = mensajeError(err);
+  }
+  pintarRetornos();
+}
+
+function filaRetorno(r) {
+  const aplicadoTxt = r.aplicado_a.length ? escapeHtml(r.aplicado_a.join(', ')) : '<span class="cero">—</span>';
+  return `
+    <tr>
+      <td class="num">${escapeHtml(r.numero)}</td>
+      <td>${escapeHtml(r.area_nombre)}</td>
+      <td>${escapeHtml(r.encargado_nombre || '—')}</td>
+      <td class="num">${formatoFechaCorta(r.fecha)}</td>
+      <td class="r num">${r.total_prendas}</td>
+      <td class="sku">${aplicadoTxt}</td>
+      <td class="r num" ${r.sin_ubicar > 0 ? 'style="color:#E3B95F"' : 'style="color:var(--muted)"'}>${r.sin_ubicar}</td>
+    </tr>`;
+}
+
+function filaSinUbicar(row) {
+  const enEdicion = estadoRetornos.asignando === row.retorno_item_id;
+  if (enEdicion) {
+    const opciones = estadoRetornos.opcionesAsignar
+      .map((o) => `<option value="${o.boletaItemId}" ${String(o.boletaItemId) === String(estadoRetornos.boletaSeleccionada) ? 'selected' : ''}>${escapeHtml(o.numero)} · ${formatoFechaCorta(o.fechaSalida)} · pendiente ${o.pendiente}</option>`)
+      .join('');
+    return `
+      <tr>
+        <td class="num">${escapeHtml(row.retorno_numero)}</td>
+        <td colspan="5">
+          <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;padding:6px 0">
+            <div style="flex:1;min-width:200px">
+              <label>Asignar a boleta (sin ubicar: ${row.sin_ubicar})</label>
+              <select id="asig-boleta">${opciones || '<option value="">Sin boletas pendientes de este producto</option>'}</select>
+            </div>
+            <div style="width:100px">
+              <label>Cantidad</label>
+              <input class="qty" type="number" min="1" max="${row.sin_ubicar}" id="asig-cantidad" value="${estadoRetornos.cantidadAsignar}">
+            </div>
+            <button class="btn ghost sm" data-accion="cancelar-asignar">Cancelar</button>
+            <button class="btn sm" data-accion="confirmar-asignar" data-id="${row.retorno_item_id}">Confirmar</button>
+          </div>
+        </td>
+      </tr>`;
+  }
+  return `
+    <tr>
+      <td class="num">${escapeHtml(row.retorno_numero)}</td>
+      <td>${escapeHtml(row.modelo)}</td>
+      <td>${escapeHtml(row.talla)}</td>
+      <td>${escapeHtml(row.color)}</td>
+      <td class="r num" style="color:#E3B95F">${row.sin_ubicar}</td>
+      <td class="r"><button class="btn ghost sm" data-accion="abrir-asignar" data-id="${row.retorno_item_id}" data-producto="${row.producto_id}" data-area="${row.area_id}">Asignar a boleta</button></td>
+    </tr>`;
+}
+
+function pintarRetornos() {
+  const sec = document.getElementById('retornos');
+  if (estadoRetornos.error) {
+    sec.innerHTML = `<div class="head"><div><h2>Retornos</h2></div></div><div class="error">${escapeHtml(estadoRetornos.error)}</div>`;
+    return;
+  }
+
+  const filasRetornos = estadoRetornos.retornos.length
+    ? estadoRetornos.retornos.map(filaRetorno).join('')
+    : `<tr><td colspan="7" class="vacio">Sin retornos registrados todavía.</td></tr>`;
+  const filasSinUbicar = estadoRetornos.sinUbicar.length
+    ? estadoRetornos.sinUbicar.map(filaSinUbicar).join('')
+    : `<tr><td colspan="6" class="vacio">No hay prendas sin ubicar.</td></tr>`;
+  const msg = estadoRetornos.mensaje
+    ? `<div class="${estadoRetornos.mensaje.tipo}">${escapeHtml(estadoRetornos.mensaje.texto)}</div>` : '';
+
+  sec.innerHTML = `
+    <div class="head">
+      <div><h2>Retornos</h2><p>Boletas que emiten las áreas al devolver. Una puede saldar varias salidas a la vez.</p></div>
+      <button class="btn" data-go="devolver">Registrar devolución</button>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Retorno</th><th>Área</th><th>Entregó</th><th>Fecha</th><th class="r">Prendas</th><th>Aplicado a</th><th class="r">Sin ubicar</th></tr></thead>
+        <tbody>${filasRetornos}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Prendas sin ubicar <em>Llegaron de más; no se asignaron a ninguna boleta</em></h3>
+      <table>
+        <thead><tr><th>Retorno</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Cantidad</th><th></th></tr></thead>
+        <tbody>${filasSinUbicar}</tbody>
+      </table>
+      ${msg}
+      <p class="note">Se guardan para que las revises sin trabar la operación del día.</p>
+    </div>`;
+}
+
+const retornosEl = document.getElementById('retornos');
+
+retornosEl.addEventListener('change', (e) => {
+  if (e.target.id === 'asig-boleta') {
+    estadoRetornos.boletaSeleccionada = e.target.value;
+  } else if (e.target.id === 'asig-cantidad') {
+    estadoRetornos.cantidadAsignar = e.target.value;
+  }
+});
+
+retornosEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-accion]');
+  if (!btn) return;
+  const accion = btn.getAttribute('data-accion');
+
+  if (accion === 'abrir-asignar') {
+    const retornoItemId = Number(btn.getAttribute('data-id'));
+    const productoId = Number(btn.getAttribute('data-producto'));
+    const areaId = Number(btn.getAttribute('data-area'));
+    try {
+      const opciones = await window.api.retornos.pendientesPorProducto({ areaId, productoId });
+      estadoRetornos.asignando = retornoItemId;
+      estadoRetornos.opcionesAsignar = opciones;
+      estadoRetornos.boletaSeleccionada = opciones.length ? String(opciones[0].boletaItemId) : '';
+      estadoRetornos.cantidadAsignar = 1;
+      estadoRetornos.mensaje = null;
+      pintarRetornos();
+    } catch (err) {
+      estadoRetornos.mensaje = { tipo: 'error', texto: mensajeError(err) };
+      pintarRetornos();
+    }
+    return;
+  }
+
+  if (accion === 'cancelar-asignar') {
+    estadoRetornos.asignando = null;
+    pintarRetornos();
+    return;
+  }
+
+  if (accion === 'confirmar-asignar') {
+    const retornoItemId = Number(btn.getAttribute('data-id'));
+    const boletaItemId = Number(document.getElementById('asig-boleta').value);
+    const cantidad = Number(document.getElementById('asig-cantidad').value);
+    if (!boletaItemId) {
+      estadoRetornos.mensaje = { tipo: 'error', texto: 'Selecciona una boleta.' };
+      pintarRetornos();
+      return;
+    }
+    try {
+      await window.api.retornos.asignarSinUbicar({ retornoItemId, boletaItemId, cantidad });
+      estadoRetornos.asignando = null;
+      estadoRetornos.mensaje = null;
+      await refrescarRetornos();
+    } catch (err) {
+      estadoRetornos.mensaje = { tipo: 'error', texto: mensajeError(err) };
+      pintarRetornos();
     }
   }
 });
