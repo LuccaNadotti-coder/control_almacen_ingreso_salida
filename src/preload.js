@@ -22,4 +22,12 @@ contextBridge.exposeInMainWorld('api', {
     desactivar: (id) => ipcRenderer.invoke('encargados:desactivar', { id }),
     reactivar: (id) => ipcRenderer.invoke('encargados:reactivar', { id }),
   },
+  boletas: {
+    listar: (filtros) => ipcRenderer.invoke('boletas:listar', filtros),
+    kpis: () => ipcRenderer.invoke('boletas:kpis'),
+    crear: (datos) => ipcRenderer.invoke('boletas:crear', datos),
+    editar: (id, datos) => ipcRenderer.invoke('boletas:editar', { id, ...datos }),
+    anular: (id, motivo) => ipcRenderer.invoke('boletas:anular', { id, motivo }),
+    obtenerDetalle: (id) => ipcRenderer.invoke('boletas:obtenerDetalle', { id }),
+  },
 });

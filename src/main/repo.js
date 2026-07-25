@@ -286,6 +286,257 @@ function reactivarEncargado(id) {
   return db.prepare('SELECT id, nombre, area_id, activo FROM encargados WHERE id = ?').get(id);
 }
 
+// ---------------------------------------------------------------------------
+// Boletas de salida
+// ---------------------------------------------------------------------------
+
+function buscarBoletaDuplicada(db, numero, excluirId) {
+  const clave = paraComparar(numero);
+  const boletas = db.prepare('SELECT id, numero FROM boletas').all();
+  return boletas.find((b) => {
+    if (excluirId && b.id === excluirId) return false;
+    return paraComparar(b.numero) === clave;
+  });
+}
+
+function validarFecha(fecha) {
+  const f = String(fecha ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) throw new Error('La fecha de salida no es válida.');
+  return f;
+}
+
+function validarItems(db, itemsInput) {
+  if (!Array.isArray(itemsInput) || itemsInput.length === 0) {
+    throw new Error('Agrega al menos una prenda a la boleta.');
+  }
+  const combinados = new Map();
+  for (const it of itemsInput) {
+    const productoId = Number(it && it.productoId);
+    const cantidad = Number(it && it.cantidad);
+    if (!Number.isInteger(productoId) || productoId <= 0) {
+      throw new Error('Uno de los productos de la boleta es inválido.');
+    }
+    if (!Number.isInteger(cantidad) || cantidad <= 0) {
+      throw new Error('La cantidad de cada línea debe ser un entero mayor a 0.');
+    }
+    combinados.set(productoId, (combinados.get(productoId) || 0) + cantidad);
+  }
+  for (const productoId of combinados.keys()) {
+    const producto = db.prepare('SELECT id FROM productos WHERE id = ? AND activo = 1').get(productoId);
+    if (!producto) throw new Error('Uno de los productos seleccionados no existe o está inactivo.');
+  }
+  return combinados;
+}
+
+function contarAsignacionesDeBoleta(db, boletaId) {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM asignaciones a
+       JOIN boleta_items bi ON bi.id = a.boleta_item_id
+       WHERE bi.boleta_id = ?`
+    )
+    .get(boletaId);
+  return row.n;
+}
+
+function obtenerDetalleBoleta(id) {
+  const db = getDb();
+  const boleta = db
+    .prepare(
+      `SELECT b.*, a.nombre AS area_nombre, e.nombre AS encargado_nombre
+       FROM boletas b
+       JOIN areas a ON a.id = b.area_id
+       JOIN encargados e ON e.id = b.encargado_id
+       WHERE b.id = ?`
+    )
+    .get(id);
+  if (!boleta) throw new Error('La boleta no existe.');
+
+  const items = db
+    .prepare(
+      `SELECT bi.id, bi.producto_id, bi.cantidad_salida, bi.cantidad_devuelta,
+              p.modelo, p.talla, p.color
+       FROM boleta_items bi
+       JOIN productos p ON p.id = bi.producto_id
+       WHERE bi.boleta_id = ?
+       ORDER BY p.modelo, p.talla, p.color`
+    )
+    .all(id)
+    .map((it) => ({ ...it, cantidad_falta: it.cantidad_salida - it.cantidad_devuelta }));
+
+  const retornos = db
+    .prepare(
+      `SELECT r.id, r.numero, r.fecha,
+              SUM(a.cantidad) AS aplicado_aqui,
+              (SELECT SUM(ri2.cantidad_total) FROM retorno_items ri2 WHERE ri2.retorno_id = r.id) AS total_retorno
+       FROM asignaciones a
+       JOIN boleta_items bi ON bi.id = a.boleta_item_id
+       JOIN retorno_items ri ON ri.id = a.retorno_item_id
+       JOIN retornos r ON r.id = ri.retorno_id
+       WHERE bi.boleta_id = ?
+       GROUP BY r.id
+       ORDER BY r.fecha, r.id`
+    )
+    .all(id);
+
+  return {
+    boleta,
+    items,
+    tieneAsignaciones: contarAsignacionesDeBoleta(db, id) > 0,
+    retornos,
+  };
+}
+
+function listarBoletas({ incluirAnuladas = true } = {}) {
+  const db = getDb();
+  const where = incluirAnuladas ? '' : 'WHERE b.anulada = 0';
+  return db
+    .prepare(
+      `SELECT b.id, b.numero, b.fecha_salida, b.estado, b.anulada, b.motivo_anulacion,
+              a.nombre AS area_nombre, e.nombre AS encargado_nombre,
+              COALESCE(SUM(bi.cantidad_salida), 0) AS total_salido,
+              COALESCE(SUM(bi.cantidad_devuelta), 0) AS total_devuelto
+       FROM boletas b
+       JOIN areas a ON a.id = b.area_id
+       JOIN encargados e ON e.id = b.encargado_id
+       LEFT JOIN boleta_items bi ON bi.boleta_id = b.id
+       ${where}
+       GROUP BY b.id
+       ORDER BY b.fecha_salida DESC, b.id DESC`
+    )
+    .all()
+    .map((fila) => ({ ...fila, total_falta: fila.total_salido - fila.total_devuelto }));
+}
+
+function kpisBoletas() {
+  const db = getDb();
+  const abiertas = db
+    .prepare(`SELECT COUNT(*) AS n FROM boletas WHERE anulada = 0 AND estado != 'completo'`)
+    .get().n;
+  const totales = db
+    .prepare(
+      `SELECT COALESCE(SUM(bi.cantidad_salida), 0) AS salido, COALESCE(SUM(bi.cantidad_devuelta), 0) AS devuelto
+       FROM boleta_items bi
+       JOIN boletas b ON b.id = bi.boleta_id
+       WHERE b.anulada = 0`
+    )
+    .get();
+  const cerradasEsteMes = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM boletas
+       WHERE anulada = 0 AND estado = 'completo' AND strftime('%Y-%m', fecha_salida) = strftime('%Y-%m', 'now')`
+    )
+    .get().n;
+
+  return {
+    boletasAbiertas: abiertas,
+    prendasFuera: totales.salido,
+    sinDevolver: totales.salido - totales.devuelto,
+    cerradasEsteMes,
+  };
+}
+
+function crearBoleta({ numero, areaId, encargadoId, fechaSalida, observacion, items }) {
+  const db = getDb();
+  const n = normalizarTexto(numero);
+  if (!n) throw new Error('El número de boleta es obligatorio.');
+  if (buscarBoletaDuplicada(db, n)) {
+    throw new Error(`Ya existe una boleta con el número "${n}".`);
+  }
+
+  const areaIdNum = Number(areaId);
+  if (!Number.isInteger(areaIdNum) || areaIdNum <= 0) throw new Error('Selecciona un área válida.');
+  const area = db.prepare('SELECT id FROM areas WHERE id = ? AND activo = 1').get(areaIdNum);
+  if (!area) throw new Error('El área indicada no existe o está inactiva.');
+
+  const encargadoIdNum = Number(encargadoId);
+  if (!Number.isInteger(encargadoIdNum) || encargadoIdNum <= 0) throw new Error('Selecciona un encargado válido.');
+  const encargado = db
+    .prepare('SELECT id FROM encargados WHERE id = ? AND area_id = ? AND activo = 1')
+    .get(encargadoIdNum, areaIdNum);
+  if (!encargado) {
+    throw new Error('El encargado indicado no existe, no pertenece al área seleccionada o está inactivo.');
+  }
+
+  const fecha = validarFecha(fechaSalida);
+  const combinados = validarItems(db, items);
+  const obs = observacion == null ? null : String(observacion).trim() || null;
+
+  return transaccion(db, () => {
+    const info = db
+      .prepare(
+        `INSERT INTO boletas (numero, area_id, encargado_id, fecha_salida, observacion, creado_en)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(n, areaIdNum, encargadoIdNum, fecha, obs, new Date().toISOString());
+    const boletaId = info.lastInsertRowid;
+    const stmt = db.prepare(
+      'INSERT INTO boleta_items (boleta_id, producto_id, cantidad_salida) VALUES (?, ?, ?)'
+    );
+    for (const [productoId, cantidad] of combinados) stmt.run(boletaId, productoId, cantidad);
+    return obtenerDetalleBoleta(boletaId);
+  });
+}
+
+function editarBoleta(id, { numero, areaId, encargadoId, fechaSalida, observacion, items }) {
+  const db = getDb();
+  const boleta = db.prepare('SELECT id, anulada FROM boletas WHERE id = ?').get(id);
+  if (!boleta) throw new Error('La boleta no existe.');
+  if (boleta.anulada) throw new Error('No se puede editar una boleta anulada.');
+  if (contarAsignacionesDeBoleta(db, id) > 0) {
+    throw new Error('No se puede editar una boleta que ya tiene devoluciones asignadas. Anúlala si necesitas corregirla.');
+  }
+
+  const n = normalizarTexto(numero);
+  if (!n) throw new Error('El número de boleta es obligatorio.');
+  if (buscarBoletaDuplicada(db, n, id)) {
+    throw new Error(`Ya existe una boleta con el número "${n}".`);
+  }
+
+  const areaIdNum = Number(areaId);
+  if (!Number.isInteger(areaIdNum) || areaIdNum <= 0) throw new Error('Selecciona un área válida.');
+  const area = db.prepare('SELECT id FROM areas WHERE id = ? AND activo = 1').get(areaIdNum);
+  if (!area) throw new Error('El área indicada no existe o está inactiva.');
+
+  const encargadoIdNum = Number(encargadoId);
+  if (!Number.isInteger(encargadoIdNum) || encargadoIdNum <= 0) throw new Error('Selecciona un encargado válido.');
+  const encargado = db
+    .prepare('SELECT id FROM encargados WHERE id = ? AND area_id = ? AND activo = 1')
+    .get(encargadoIdNum, areaIdNum);
+  if (!encargado) {
+    throw new Error('El encargado indicado no existe, no pertenece al área seleccionada o está inactivo.');
+  }
+
+  const fecha = validarFecha(fechaSalida);
+  const combinados = validarItems(db, items);
+  const obs = observacion == null ? null : String(observacion).trim() || null;
+
+  return transaccion(db, () => {
+    db.prepare(
+      `UPDATE boletas SET numero = ?, area_id = ?, encargado_id = ?, fecha_salida = ?, observacion = ? WHERE id = ?`
+    ).run(n, areaIdNum, encargadoIdNum, fecha, obs, id);
+    db.prepare('DELETE FROM boleta_items WHERE boleta_id = ?').run(id);
+    const stmt = db.prepare(
+      'INSERT INTO boleta_items (boleta_id, producto_id, cantidad_salida) VALUES (?, ?, ?)'
+    );
+    for (const [productoId, cantidad] of combinados) stmt.run(id, productoId, cantidad);
+    return obtenerDetalleBoleta(id);
+  });
+}
+
+function anularBoleta(id, motivo) {
+  const db = getDb();
+  const boleta = db.prepare('SELECT id, anulada FROM boletas WHERE id = ?').get(id);
+  if (!boleta) throw new Error('La boleta no existe.');
+  if (boleta.anulada) throw new Error('La boleta ya está anulada.');
+
+  const m = String(motivo ?? '').trim();
+  if (!m) throw new Error('Debes indicar un motivo para anular la boleta.');
+
+  db.prepare('UPDATE boletas SET anulada = 1, motivo_anulacion = ? WHERE id = ?').run(m, id);
+  return obtenerDetalleBoleta(id);
+}
+
 module.exports = {
   normalizarTexto,
   transaccion,
@@ -293,6 +544,14 @@ module.exports = {
     listar: listarProductos,
     crear: crearProducto,
     editar: editarProducto,
+  },
+  boletas: {
+    listar: listarBoletas,
+    kpis: kpisBoletas,
+    crear: crearBoleta,
+    editar: editarBoleta,
+    anular: anularBoleta,
+    obtenerDetalle: obtenerDetalleBoleta,
   },
   areas: {
     listar: listarAreas,
