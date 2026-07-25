@@ -956,6 +956,162 @@ function asignarSinUbicar({ retornoItemId, boletaItemId, cantidad }) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Pendientes y saldo por área
+// ---------------------------------------------------------------------------
+
+function diasDesdeFecha(fechaISO) {
+  const inicio = new Date(`${fechaISO}T00:00:00`);
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.round((hoy.getTime() - inicio.getTime()) / 86400000));
+}
+
+function condicionesPendientes({ areaId, encargadoId, desde }) {
+  const condiciones = ['b.anulada = 0', 'bi.cantidad_salida > bi.cantidad_devuelta'];
+  const params = [];
+  if (areaId) {
+    condiciones.push('b.area_id = ?');
+    params.push(Number(areaId));
+  }
+  if (encargadoId) {
+    condiciones.push('b.encargado_id = ?');
+    params.push(Number(encargadoId));
+  }
+  if (desde) {
+    condiciones.push('b.fecha_salida >= ?');
+    params.push(String(desde));
+  }
+  return { where: condiciones.join(' AND '), params };
+}
+
+function listarPendientes(filtros = {}) {
+  const db = getDb();
+  const { where, params } = condicionesPendientes(filtros);
+  return db
+    .prepare(
+      `SELECT b.id AS boleta_id, b.numero, b.fecha_salida,
+              a.id AS area_id, a.nombre AS area_nombre,
+              e.id AS encargado_id, e.nombre AS encargado_nombre,
+              p.modelo, p.talla, p.color,
+              bi.cantidad_salida, bi.cantidad_devuelta
+       FROM boleta_items bi
+       JOIN boletas b ON b.id = bi.boleta_id
+       JOIN areas a ON a.id = b.area_id
+       JOIN encargados e ON e.id = b.encargado_id
+       JOIN productos p ON p.id = bi.producto_id
+       WHERE ${where}
+       ORDER BY b.fecha_salida ASC, b.id ASC, p.modelo, p.talla, p.color`
+    )
+    .all(...params)
+    .map((row) => ({
+      ...row,
+      cantidad_falta: row.cantidad_salida - row.cantidad_devuelta,
+      dias: diasDesdeFecha(row.fecha_salida),
+    }));
+}
+
+function saldoPorArea(filtros = {}) {
+  const db = getDb();
+  const { where, params } = condicionesPendientes(filtros);
+  const filas = db
+    .prepare(
+      `SELECT a.id AS area_id, a.nombre AS area_nombre, b.id AS boleta_id, b.fecha_salida,
+              bi.cantidad_salida, bi.cantidad_devuelta
+       FROM boleta_items bi
+       JOIN boletas b ON b.id = bi.boleta_id
+       JOIN areas a ON a.id = b.area_id
+       WHERE ${where}`
+    )
+    .all(...params);
+
+  const porArea = new Map();
+  for (const f of filas) {
+    if (!porArea.has(f.area_id)) {
+      porArea.set(f.area_id, { boletasAbiertas: new Set(), prendasDebiendo: 0, fechaMasAntigua: null });
+    }
+    const acc = porArea.get(f.area_id);
+    acc.boletasAbiertas.add(f.boleta_id);
+    acc.prendasDebiendo += f.cantidad_salida - f.cantidad_devuelta;
+    if (!acc.fechaMasAntigua || f.fecha_salida < acc.fechaMasAntigua) acc.fechaMasAntigua = f.fecha_salida;
+  }
+
+  const areaIdFiltro = filtros.areaId ? Number(filtros.areaId) : null;
+  const areas = db.prepare('SELECT id, nombre FROM areas WHERE activo = 1 ORDER BY nombre').all();
+  return areas
+    .filter((a) => !areaIdFiltro || a.id === areaIdFiltro)
+    .map((a) => {
+      const acc = porArea.get(a.id);
+      return {
+        areaId: a.id,
+        areaNombre: a.nombre,
+        boletasAbiertas: acc ? acc.boletasAbiertas.size : 0,
+        prendasDebiendo: acc ? acc.prendasDebiendo : 0,
+        diasMasAntigua: acc && acc.fechaMasAntigua ? diasDesdeFecha(acc.fechaMasAntigua) : null,
+      };
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Integridad de datos
+// ---------------------------------------------------------------------------
+
+function verificarIntegridad() {
+  const db = getDb();
+  const filas = db
+    .prepare(
+      `SELECT bi.id AS boleta_item_id, bi.boleta_id, b.numero, bi.cantidad_devuelta,
+              COALESCE((SELECT SUM(cantidad) FROM asignaciones WHERE boleta_item_id = bi.id), 0) AS suma_asignaciones,
+              p.modelo, p.talla, p.color
+       FROM boleta_items bi
+       JOIN boletas b ON b.id = bi.boleta_id
+       JOIN productos p ON p.id = bi.producto_id`
+    )
+    .all();
+
+  const descuadres = filas
+    .filter((f) => f.cantidad_devuelta !== f.suma_asignaciones)
+    .map((f) => ({
+      boletaItemId: f.boleta_item_id,
+      boletaId: f.boleta_id,
+      numero: f.numero,
+      modelo: f.modelo,
+      talla: f.talla,
+      color: f.color,
+      cantidadDevuelta: f.cantidad_devuelta,
+      sumaAsignaciones: f.suma_asignaciones,
+      diferencia: f.cantidad_devuelta - f.suma_asignaciones,
+    }));
+
+  return { revisadas: filas.length, descuadres };
+}
+
+function recalcularIntegridad() {
+  const db = getDb();
+  return transaccion(db, () => {
+    const filas = db
+      .prepare(
+        `SELECT bi.id AS boleta_item_id, bi.boleta_id, bi.cantidad_devuelta,
+                COALESCE((SELECT SUM(cantidad) FROM asignaciones WHERE boleta_item_id = bi.id), 0) AS suma_asignaciones
+         FROM boleta_items bi`
+      )
+      .all();
+
+    const boletasAfectadas = new Set();
+    let corregidas = 0;
+    for (const f of filas) {
+      if (f.cantidad_devuelta !== f.suma_asignaciones) {
+        db.prepare('UPDATE boleta_items SET cantidad_devuelta = ? WHERE id = ?').run(f.suma_asignaciones, f.boleta_item_id);
+        boletasAfectadas.add(f.boleta_id);
+        corregidas += 1;
+      }
+    }
+    for (const boletaId of boletasAfectadas) recalcularEstadoBoleta(db, boletaId);
+
+    return { corregidas, boletasRecalculadas: boletasAfectadas.size };
+  });
+}
+
 module.exports = {
   normalizarTexto,
   transaccion,
@@ -979,6 +1135,14 @@ module.exports = {
     pendientesSinUbicar: listarPendientesSinUbicar,
     pendientesPorProducto,
     asignarSinUbicar,
+  },
+  pendientes: {
+    listar: listarPendientes,
+    saldoPorArea,
+  },
+  integridad: {
+    verificar: verificarIntegridad,
+    recalcular: recalcularIntegridad,
   },
   areas: {
     listar: listarAreas,

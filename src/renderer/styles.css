@@ -149,6 +149,7 @@ input.qty { width: 72px; text-align: right; font-variant-numeric: tabular-nums; 
 .foot { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-top: 1px solid var(--line); gap: 14px; flex-wrap: wrap; }
 .aviso { background: #2A210F; border: 1px solid #4A3A18; color: #E3B95F; font-size: 12.5px; padding: 10px 14px; border-radius: 8px; margin: 0 18px 16px; }
 .error { background: #301717; border: 1px solid #4A1F1F; color: #F08AA0; font-size: 12.5px; padding: 10px 14px; border-radius: 8px; margin: 0 18px 16px; }
+.ok { background: #17301F; border: 1px solid #1F4A2C; color: #6FC98C; font-size: 12.5px; padding: 10px 14px; border-radius: 8px; margin: 0 18px 16px; }
 
 .vacio { padding: 40px 18px; text-align: center; color: var(--muted); font-size: 13px; }
 

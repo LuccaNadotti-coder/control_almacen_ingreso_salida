@@ -4,6 +4,7 @@ const path = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const { getDb } = require('./db');
 const { registrarHandlers } = require('./ipc');
+const { crearRespaldo } = require('./respaldo');
 
 let ventanaPrincipal = null;
 
@@ -28,6 +29,11 @@ function crearVentana() {
 
 app.whenReady().then(() => {
   getDb();
+  try {
+    crearRespaldo();
+  } catch (err) {
+    console.error('No se pudo crear el respaldo automático de arranque:', err);
+  }
   registrarHandlers();
   crearVentana();
 

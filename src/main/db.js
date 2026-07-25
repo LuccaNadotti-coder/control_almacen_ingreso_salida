@@ -142,4 +142,11 @@ function getDb() {
   return dbInstance;
 }
 
-module.exports = { getDb, getDbPath };
+function cerrarDb() {
+  if (dbInstance) {
+    dbInstance.close();
+    dbInstance = null;
+  }
+}
+
+module.exports = { getDb, getDbPath, cerrarDb };

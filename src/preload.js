@@ -38,4 +38,20 @@ contextBridge.exposeInMainWorld('api', {
     pendientesPorProducto: (datos) => ipcRenderer.invoke('retornos:pendientesPorProducto', datos),
     asignarSinUbicar: (datos) => ipcRenderer.invoke('retornos:asignarSinUbicar', datos),
   },
+  pendientes: {
+    listar: (filtros) => ipcRenderer.invoke('pendientes:listar', filtros),
+    saldoPorArea: (filtros) => ipcRenderer.invoke('pendientes:saldoPorArea', filtros),
+    exportarExcel: (filtros) => ipcRenderer.invoke('pendientes:exportarExcel', filtros),
+  },
+  integridad: {
+    verificar: () => ipcRenderer.invoke('integridad:verificar'),
+    recalcular: () => ipcRenderer.invoke('integridad:recalcular'),
+  },
+  respaldo: {
+    crearAhora: () => ipcRenderer.invoke('respaldo:crearAhora'),
+    info: () => ipcRenderer.invoke('respaldo:info'),
+    abrirCarpeta: () => ipcRenderer.invoke('respaldo:abrirCarpeta'),
+    elegirArchivoRestaurar: () => ipcRenderer.invoke('respaldo:elegirArchivoRestaurar'),
+    restaurar: (ruta) => ipcRenderer.invoke('respaldo:restaurar', { ruta }),
+  },
 });

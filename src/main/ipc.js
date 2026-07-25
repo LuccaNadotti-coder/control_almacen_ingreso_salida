@@ -2,6 +2,8 @@
 
 const { ipcMain } = require('electron');
 const repo = require('./repo');
+const { exportarPendientesExcel } = require('./exportar');
+const respaldo = require('./respaldo');
 
 function registrarHandlers() {
   ipcMain.handle('productos:listar', (_e, filtros) => repo.productos.listar(filtros));
@@ -33,6 +35,19 @@ function registrarHandlers() {
   ipcMain.handle('retornos:pendientesSinUbicar', () => repo.retornos.pendientesSinUbicar());
   ipcMain.handle('retornos:pendientesPorProducto', (_e, datos) => repo.retornos.pendientesPorProducto(datos));
   ipcMain.handle('retornos:asignarSinUbicar', (_e, datos) => repo.retornos.asignarSinUbicar(datos));
+
+  ipcMain.handle('pendientes:listar', (_e, filtros) => repo.pendientes.listar(filtros));
+  ipcMain.handle('pendientes:saldoPorArea', (_e, filtros) => repo.pendientes.saldoPorArea(filtros));
+  ipcMain.handle('pendientes:exportarExcel', (_e, filtros) => exportarPendientesExcel(filtros));
+
+  ipcMain.handle('integridad:verificar', () => repo.integridad.verificar());
+  ipcMain.handle('integridad:recalcular', () => repo.integridad.recalcular());
+
+  ipcMain.handle('respaldo:crearAhora', () => respaldo.crearRespaldo());
+  ipcMain.handle('respaldo:info', () => respaldo.infoRespaldos());
+  ipcMain.handle('respaldo:abrirCarpeta', () => respaldo.abrirCarpetaDatos());
+  ipcMain.handle('respaldo:elegirArchivoRestaurar', () => respaldo.elegirArchivoRestaurar());
+  ipcMain.handle('respaldo:restaurar', (_e, { ruta }) => respaldo.restaurarDesdeArchivo(ruta));
 }
 
 module.exports = { registrarHandlers };

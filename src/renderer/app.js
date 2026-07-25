@@ -53,6 +53,13 @@ function formatoFechaLarga(iso) {
   return `${d}/${m}/${y}`;
 }
 
+function formatoFechaHora(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function diasDesde(iso) {
   if (!iso) return 0;
   const inicio = new Date(`${iso}T00:00:00`);
@@ -65,10 +72,7 @@ function diasDesde(iso) {
 // Router
 // ---------------------------------------------------------------------------
 
-const PROXIMAMENTE = {
-  pendientes: { titulo: 'Pendientes', desc: 'Todo lo que salió del almacén y todavía no regresa.' },
-  ajustes: { titulo: 'Ajustes', desc: 'Datos y respaldo. Todo vive en esta computadora.' },
-};
+const PROXIMAMENTE = {};
 
 function pintarProximamente(id) {
   const info = PROXIMAMENTE[id];
@@ -98,6 +102,10 @@ function irA(id, params) {
     abrirDevolucion();
   } else if (id === 'retornos') {
     refrescarRetornos();
+  } else if (id === 'pendientes') {
+    abrirPendientes();
+  } else if (id === 'ajustes') {
+    abrirAjustes();
   } else if (!vistasInicializadas.has(id)) {
     pintarProximamente(id);
     vistasInicializadas.add(id);
@@ -1122,6 +1130,375 @@ retornosEl.addEventListener('click', async (e) => {
       estadoRetornos.mensaje = { tipo: 'error', texto: mensajeError(err) };
       pintarRetornos();
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PENDIENTES
+// ---------------------------------------------------------------------------
+
+const estadoPendientes = {
+  areaId: '',
+  encargadoId: '',
+  desde: '',
+  areas: [],
+  encargados: [],
+  filas: [],
+  saldo: [],
+  error: null,
+  exportando: false,
+  mensaje: null,
+};
+
+function filtrosPendientesActuales() {
+  return {
+    areaId: estadoPendientes.areaId ? Number(estadoPendientes.areaId) : null,
+    encargadoId: estadoPendientes.encargadoId ? Number(estadoPendientes.encargadoId) : null,
+    desde: estadoPendientes.desde || null,
+  };
+}
+
+async function refrescarPendientes() {
+  try {
+    const filtros = filtrosPendientesActuales();
+    const [filas, saldo] = await Promise.all([
+      window.api.pendientes.listar(filtros),
+      window.api.pendientes.saldoPorArea(filtros),
+    ]);
+    estadoPendientes.filas = filas;
+    estadoPendientes.saldo = saldo;
+    estadoPendientes.error = null;
+  } catch (err) {
+    estadoPendientes.error = mensajeError(err);
+  }
+  pintarPendientes();
+}
+
+async function abrirPendientes() {
+  try {
+    const [areas, encargados] = await Promise.all([
+      window.api.areas.listar({ incluirInactivos: true }),
+      window.api.encargados.listar({ incluirInactivos: true }),
+    ]);
+    estadoPendientes.areas = areas;
+    estadoPendientes.encargados = encargados;
+  } catch (err) {
+    estadoPendientes.error = mensajeError(err);
+  }
+  await refrescarPendientes();
+}
+
+function filaPendiente(p) {
+  return `
+    <tr>
+      <td class="num">${escapeHtml(p.numero)}</td>
+      <td>${escapeHtml(p.area_nombre)}</td>
+      <td>${escapeHtml(p.modelo)}</td>
+      <td>${escapeHtml(p.talla)}</td>
+      <td>${escapeHtml(p.color)}</td>
+      <td class="r num">${p.cantidad_salida}</td>
+      <td class="r num">${p.cantidad_devuelta}</td>
+      <td class="r num falta">${p.cantidad_falta}</td>
+      <td class="r num">${p.dias}</td>
+    </tr>`;
+}
+
+function filaSaldoArea(s) {
+  return `
+    <tr>
+      <td>${escapeHtml(s.areaNombre)}</td>
+      <td class="r num">${s.boletasAbiertas}</td>
+      <td class="r num ${s.prendasDebiendo > 0 ? 'falta' : 'cero'}">${s.prendasDebiendo}</td>
+      <td class="r num">${s.diasMasAntigua === null ? '—' : `${s.diasMasAntigua} días`}</td>
+    </tr>`;
+}
+
+function pintarPendientes() {
+  const sec = document.getElementById('pendientes');
+  if (estadoPendientes.error) {
+    sec.innerHTML = `<div class="head"><div><h2>Pendientes</h2></div></div><div class="error">${escapeHtml(estadoPendientes.error)}</div>`;
+    return;
+  }
+
+  const opcionesArea = estadoPendientes.areas
+    .map((a) => `<option value="${a.id}" ${String(a.id) === String(estadoPendientes.areaId) ? 'selected' : ''}>${escapeHtml(a.nombre)}</option>`)
+    .join('');
+  const opcionesEncargado = estadoPendientes.encargados
+    .map((e) => `<option value="${e.id}" ${String(e.id) === String(estadoPendientes.encargadoId) ? 'selected' : ''}>${escapeHtml(e.nombre)}</option>`)
+    .join('');
+
+  const filas = estadoPendientes.filas.length
+    ? estadoPendientes.filas.map(filaPendiente).join('')
+    : `<tr><td colspan="9" class="vacio">Sin líneas pendientes con estos filtros.</td></tr>`;
+  const filasSaldo = estadoPendientes.saldo.length
+    ? estadoPendientes.saldo.map(filaSaldoArea).join('')
+    : `<tr><td colspan="4" class="vacio">Sin áreas para mostrar.</td></tr>`;
+
+  const totalFalta = estadoPendientes.filas.reduce((s, p) => s + p.cantidad_falta, 0);
+  const msg = estadoPendientes.mensaje
+    ? `<div class="${estadoPendientes.mensaje.tipo}">${escapeHtml(estadoPendientes.mensaje.texto)}</div>` : '';
+
+  sec.innerHTML = `
+    <div class="head">
+      <div><h2>Pendientes</h2><p>Todo lo que salió del almacén y todavía no regresa.</p></div>
+      <button class="btn ghost" data-accion="exportar-excel" ${estadoPendientes.exportando ? 'disabled' : ''}>${estadoPendientes.exportando ? 'Exportando…' : 'Exportar a Excel'}</button>
+    </div>
+    <div class="card">
+      <div class="pad" style="border-bottom:1px solid var(--line)">
+        <div class="grid3">
+          <div><label>Área</label><select id="pd-area"><option value="">Todas</option>${opcionesArea}</select></div>
+          <div><label>Encargado</label><select id="pd-encargado"><option value="">Todos</option>${opcionesEncargado}</select></div>
+          <div><label>Desde</label><input type="date" id="pd-desde" value="${escapeHtml(estadoPendientes.desde)}"></div>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Boleta</th><th>Área</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Salió</th><th class="r">Devuelto</th><th class="r">Falta</th><th class="r">Días</th></tr></thead>
+        <tbody>${filas}</tbody>
+      </table>
+      ${msg}
+      <p class="note">${estadoPendientes.filas.length} línea${estadoPendientes.filas.length === 1 ? '' : 's'} abiertas · <span class="falta">${totalFalta} prendas sin devolver</span></p>
+    </div>
+    <div class="card">
+      <h3>Saldo por área <em>Cuánto debe cada área en total, sin mirar boletas</em></h3>
+      <table>
+        <thead><tr><th>Área</th><th class="r">Boletas abiertas</th><th class="r">Prendas debiendo</th><th class="r">Más antigua</th></tr></thead>
+        <tbody>${filasSaldo}</tbody>
+      </table>
+    </div>`;
+}
+
+const pendientesEl = document.getElementById('pendientes');
+
+pendientesEl.addEventListener('change', async (e) => {
+  if (e.target.id === 'pd-area' || e.target.id === 'pd-encargado' || e.target.id === 'pd-desde') {
+    estadoPendientes.areaId = document.getElementById('pd-area').value;
+    estadoPendientes.encargadoId = document.getElementById('pd-encargado').value;
+    estadoPendientes.desde = document.getElementById('pd-desde').value;
+    await refrescarPendientes();
+  }
+});
+
+pendientesEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-accion]');
+  if (!btn || btn.getAttribute('data-accion') !== 'exportar-excel') return;
+
+  estadoPendientes.exportando = true;
+  estadoPendientes.mensaje = null;
+  pintarPendientes();
+  try {
+    const resultado = await window.api.pendientes.exportarExcel(filtrosPendientesActuales());
+    estadoPendientes.mensaje = resultado.cancelado
+      ? null
+      : { tipo: 'ok', texto: `Archivo guardado en ${resultado.ruta}` };
+  } catch (err) {
+    estadoPendientes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+  }
+  estadoPendientes.exportando = false;
+  pintarPendientes();
+});
+
+// ---------------------------------------------------------------------------
+// AJUSTES
+// ---------------------------------------------------------------------------
+
+const estadoAjustes = {
+  infoRespaldo: null,
+  mensaje: null,
+  cargandoRespaldo: false,
+  archivoRestaurar: null,
+  integridad: null,
+  recalculando: false,
+};
+
+function nombreArchivo(ruta) {
+  return String(ruta ?? '').split(/[\\/]/).pop();
+}
+
+async function abrirAjustes() {
+  estadoAjustes.mensaje = null;
+  estadoAjustes.archivoRestaurar = null;
+  estadoAjustes.integridad = null;
+  try {
+    estadoAjustes.infoRespaldo = await window.api.respaldo.info();
+  } catch (err) {
+    estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+  }
+  pintarAjustes();
+}
+
+async function verificarIntegridadUI() {
+  estadoAjustes.mensaje = null;
+  pintarAjustes();
+  try {
+    estadoAjustes.integridad = await window.api.integridad.verificar();
+  } catch (err) {
+    estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+  }
+  pintarAjustes();
+}
+
+function filaDescuadre(d) {
+  return `
+    <tr>
+      <td class="num">${escapeHtml(d.numero)}</td>
+      <td>${escapeHtml(d.modelo)}</td>
+      <td>${escapeHtml(d.talla)}</td>
+      <td>${escapeHtml(d.color)}</td>
+      <td class="r num">${d.cantidadDevuelta}</td>
+      <td class="r num">${d.sumaAsignaciones}</td>
+      <td class="r num falta">${d.diferencia}</td>
+    </tr>`;
+}
+
+function pintarAjustes() {
+  const sec = document.getElementById('ajustes');
+  const info = estadoAjustes.infoRespaldo;
+  const ultimoTxt = info && info.ultimo ? formatoFechaHora(info.ultimo.creadoEn) : 'todavía no hay respaldos';
+  const totalTxt = info ? `${info.total}/${info.maximo}` : '—';
+  const maximo = info ? info.maximo : 30;
+
+  const msg = estadoAjustes.mensaje
+    ? `<div class="${estadoAjustes.mensaje.tipo}">${escapeHtml(estadoAjustes.mensaje.texto)}</div>` : '';
+
+  const confirmarRestaurar = estadoAjustes.archivoRestaurar ? `
+    <div class="aviso" style="margin:0 18px 16px">
+      <b>¿Restaurar desde "${escapeHtml(nombreArchivo(estadoAjustes.archivoRestaurar))}"?</b><br>
+      Esto reemplazará TODOS los datos actuales por los del archivo elegido. Se crea un respaldo de
+      seguridad del estado actual antes de reemplazar, y la aplicación se reiniciará sola.
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <button class="btn ghost sm" data-accion="cancelar-restaurar">Cancelar</button>
+        <button class="btn warn sm" data-accion="confirmar-restaurar">Sí, reemplazar todos los datos</button>
+      </div>
+    </div>` : '';
+
+  let integridadHtml = '';
+  if (estadoAjustes.integridad) {
+    if (estadoAjustes.integridad.descuadres.length === 0) {
+      integridadHtml = `<div class="ok" style="margin-top:14px">Todo cuadra. Se revisaron ${estadoAjustes.integridad.revisadas} línea(s).</div>`;
+    } else {
+      const filas = estadoAjustes.integridad.descuadres.map(filaDescuadre).join('');
+      integridadHtml = `
+        <div class="error" style="margin-top:14px">
+          Se encontraron ${estadoAjustes.integridad.descuadres.length} descuadre(s) de ${estadoAjustes.integridad.revisadas} línea(s) revisadas.
+        </div>
+        <table>
+          <thead><tr><th>Boleta</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Devuelto registrado</th><th class="r">Suma real</th><th class="r">Diferencia</th></tr></thead>
+          <tbody>${filas}</tbody>
+        </table>
+        <div class="pad">
+          <button class="btn warn" data-accion="recalcular-integridad" ${estadoAjustes.recalculando ? 'disabled' : ''}>${estadoAjustes.recalculando ? 'Recalculando…' : 'Recalcular automáticamente'}</button>
+        </div>`;
+    }
+  }
+
+  sec.innerHTML = `
+    <div class="head"><div><h2>Ajustes</h2><p>Datos y respaldo. Todo vive en esta computadora.</p></div></div>
+    ${msg}
+    <div class="card">
+      <h3>Respaldo</h3>
+      <div class="pad">
+        <p style="color:var(--muted);font-size:13px;margin-bottom:14px">Último respaldo: <b class="num" style="color:var(--text)">${ultimoTxt}</b> · ${totalTxt} guardados · se conservan los últimos ${maximo}.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn" data-accion="crear-respaldo" ${estadoAjustes.cargandoRespaldo ? 'disabled' : ''}>${estadoAjustes.cargandoRespaldo ? 'Creando…' : 'Crear respaldo ahora'}</button>
+          <button class="btn ghost" data-accion="abrir-carpeta">Abrir carpeta de datos</button>
+          <button class="btn ghost" data-accion="elegir-restaurar">Restaurar desde archivo</button>
+        </div>
+      </div>
+      ${confirmarRestaurar}
+      <p class="note">Recomendación: una vez al mes copia la carpeta de respaldos a una USB o a Drive.</p>
+    </div>
+    <div class="card">
+      <h3>Integridad</h3>
+      <div class="pad">
+        <p style="color:var(--muted);font-size:13px;margin-bottom:14px">Verifica que lo devuelto acumulado (cantidad_devuelta) cuadre con la suma real de asignaciones de cada línea.</p>
+        <button class="btn ghost" data-accion="verificar-integridad">Verificar ahora</button>
+        ${integridadHtml}
+      </div>
+    </div>`;
+}
+
+const ajustesEl = document.getElementById('ajustes');
+
+ajustesEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-accion]');
+  if (!btn) return;
+  const accion = btn.getAttribute('data-accion');
+
+  if (accion === 'crear-respaldo') {
+    estadoAjustes.cargandoRespaldo = true;
+    estadoAjustes.mensaje = null;
+    pintarAjustes();
+    try {
+      const ruta = await window.api.respaldo.crearAhora();
+      estadoAjustes.infoRespaldo = await window.api.respaldo.info();
+      estadoAjustes.mensaje = { tipo: 'ok', texto: `Respaldo creado: ${nombreArchivo(ruta)}` };
+    } catch (err) {
+      estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+    }
+    estadoAjustes.cargandoRespaldo = false;
+    pintarAjustes();
+    return;
+  }
+
+  if (accion === 'abrir-carpeta') {
+    try {
+      await window.api.respaldo.abrirCarpeta();
+    } catch (err) {
+      estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+      pintarAjustes();
+    }
+    return;
+  }
+
+  if (accion === 'elegir-restaurar') {
+    try {
+      const resultado = await window.api.respaldo.elegirArchivoRestaurar();
+      if (!resultado.cancelado) {
+        estadoAjustes.archivoRestaurar = resultado.ruta;
+        estadoAjustes.mensaje = null;
+      }
+      pintarAjustes();
+    } catch (err) {
+      estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+      pintarAjustes();
+    }
+    return;
+  }
+
+  if (accion === 'cancelar-restaurar') {
+    estadoAjustes.archivoRestaurar = null;
+    pintarAjustes();
+    return;
+  }
+
+  if (accion === 'confirmar-restaurar') {
+    try {
+      await window.api.respaldo.restaurar(estadoAjustes.archivoRestaurar);
+    } catch (err) {
+      estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+      estadoAjustes.archivoRestaurar = null;
+      pintarAjustes();
+    }
+    return;
+  }
+
+  if (accion === 'verificar-integridad') {
+    await verificarIntegridadUI();
+    return;
+  }
+
+  if (accion === 'recalcular-integridad') {
+    estadoAjustes.recalculando = true;
+    pintarAjustes();
+    try {
+      const resultado = await window.api.integridad.recalcular();
+      estadoAjustes.mensaje = { tipo: 'ok', texto: `Se corrigieron ${resultado.corregidas} línea(s) en ${resultado.boletasRecalculadas} boleta(s).` };
+      estadoAjustes.integridad = await window.api.integridad.verificar();
+    } catch (err) {
+      estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+    }
+    estadoAjustes.recalculando = false;
+    pintarAjustes();
   }
 });
 
