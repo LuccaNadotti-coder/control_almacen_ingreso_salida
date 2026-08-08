@@ -69,6 +69,75 @@ function diasDesde(iso) {
 }
 
 // ---------------------------------------------------------------------------
+// Búsqueda inteligente de productos (Nueva salida / Registrar devolución)
+// ---------------------------------------------------------------------------
+
+function textoProducto(p) {
+  return `${p.modelo} · ${p.talla} · ${p.color}`;
+}
+
+function normalizarBusquedaProducto(s) {
+  return String(s ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+// Coincidencia por palabras sin importar el orden ("vestido negro l" encuentra
+// "VESTIDO ... L ... NEGRO"), priorizando lo que empieza igual que lo escrito.
+function buscarSugerenciasProducto(productos, texto) {
+  const normalizado = normalizarBusquedaProducto(texto);
+  if (normalizado.length < 2) return [];
+  const palabras = normalizado.split(/\s+/).filter(Boolean);
+  const coincidencias = productos.filter((p) => {
+    const t = normalizarBusquedaProducto(`${p.modelo} ${p.talla} ${p.color}`);
+    return palabras.every((palabra) => t.includes(palabra));
+  });
+  coincidencias.sort((a, b) => {
+    const ta = normalizarBusquedaProducto(`${a.modelo} ${a.talla} ${a.color}`);
+    const tb = normalizarBusquedaProducto(`${b.modelo} ${b.talla} ${b.color}`);
+    const aEmpieza = ta.startsWith(normalizado) ? 0 : 1;
+    const bEmpieza = tb.startsWith(normalizado) ? 0 : 1;
+    if (aEmpieza !== bEmpieza) return aEmpieza - bEmpieza;
+    return ta.localeCompare(tb);
+  });
+  return coincidencias.slice(0, 8);
+}
+
+// Reparte lo escrito en modelo/talla/color lo mejor posible: último token =
+// color, penúltimo = talla, el resto = modelo. El usuario ajusta antes de guardar.
+function partirTextoProducto(texto) {
+  const palabras = String(texto ?? '').trim().split(/\s+/).filter(Boolean);
+  if (palabras.length === 0) return { modelo: '', talla: '', color: '' };
+  if (palabras.length === 1) return { modelo: palabras[0], talla: '', color: '' };
+  if (palabras.length === 2) return { modelo: palabras[0], talla: palabras[1], color: '' };
+  const color = palabras[palabras.length - 1];
+  const talla = palabras[palabras.length - 2];
+  const modelo = palabras.slice(0, palabras.length - 2).join(' ');
+  return { modelo, talla, color };
+}
+
+function htmlSugerenciasProducto(productos, texto, prefijo) {
+  const textoLimpio = String(texto ?? '').trim();
+  if (textoLimpio.length < 2) return '';
+  const sugerencias = buscarSugerenciasProducto(productos, textoLimpio);
+  const itemsProductos = sugerencias
+    .map(
+      (p) => `
+      <div class="sug-item" data-accion="elegir-producto-${prefijo}" data-id="${p.id}">
+        <b>${escapeHtml(p.modelo)}</b> <span>${escapeHtml(p.talla)} · ${escapeHtml(p.color)}</span>
+      </div>`
+    )
+    .join('');
+  const itemCrear = `
+    <div class="sug-item sug-crear" data-accion="crear-producto-nuevo-${prefijo}" data-texto="${escapeHtml(textoLimpio)}">
+      + Crear producto nuevo: "${escapeHtml(textoLimpio)}"
+    </div>`;
+  return `<div class="sugerencias">${itemsProductos}${itemCrear}</div>`;
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -118,6 +187,12 @@ document.addEventListener('click', (e) => {
   const id = el.getAttribute('data-go');
   const rawId = el.getAttribute('data-id');
   irA(id, rawId ? { id: Number(rawId) } : undefined);
+});
+
+// Cierra cualquier dropdown de sugerencias de producto al hacer clic fuera de él.
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.campo-buscar')) return;
+  document.querySelectorAll('#ns-sugerencias, #dv-sugerencias').forEach((el) => { el.innerHTML = ''; });
 });
 
 function tagEstadoBoleta(estadoBoleta, anulada) {
@@ -211,6 +286,8 @@ const estadoNueva = {
   observacion: '',
   lineas: [],
   busqueda: '',
+  productoSeleccionadoId: null,
+  formNuevoProducto: null,
   cantidadTmp: 1,
   productosDisponibles: [],
   areas: [],
@@ -234,6 +311,8 @@ async function abrirNuevaSalida(editarId) {
     estadoNueva.mensaje = null;
     estadoNueva.mensajeLinea = null;
     estadoNueva.busqueda = '';
+    estadoNueva.productoSeleccionadoId = null;
+    estadoNueva.formNuevoProducto = null;
     estadoNueva.cantidadTmp = 1;
 
     if (editarId) {
@@ -285,10 +364,21 @@ function capturarCamposNueva() {
   if (campo('ns-cantidad')) estadoNueva.cantidadTmp = campo('ns-cantidad').value;
 }
 
-function opcionesProductosDatalist() {
-  return estadoNueva.productosDisponibles
-    .map((p) => `<option data-id="${p.id}" value="${escapeHtml(`${p.modelo} · ${p.talla} · ${p.color}`)}"></option>`)
-    .join('');
+function formNuevoProductoHtml(form, prefijo) {
+  if (!form) return '';
+  return `
+    <div class="pad" style="border-top:1px solid var(--line);background:var(--panel-2)">
+      <p style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Crear producto nuevo</p>
+      <div class="grid3">
+        <div><label>Modelo</label><input data-mayus id="${prefijo}-inline-modelo" value="${escapeHtml(form.modelo)}"></div>
+        <div><label>Talla</label><input data-mayus id="${prefijo}-inline-talla" value="${escapeHtml(form.talla)}"></div>
+        <div><label>Color</label><input data-mayus id="${prefijo}-inline-color" value="${escapeHtml(form.color)}"></div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button class="btn ghost sm" data-accion="cancelar-producto-inline-${prefijo}">Cancelar</button>
+        <button class="btn sm" data-accion="guardar-producto-inline-${prefijo}">Guardar producto</button>
+      </div>
+    </div>`;
 }
 
 function filaLinea(l) {
@@ -343,16 +433,17 @@ function pintarNueva() {
       <h3>Prendas</h3>
       <div class="pad" style="border-bottom:1px solid var(--line)">
         <div class="grid3" style="align-items:end">
-          <div>
+          <div class="campo-buscar">
             <label>Buscar producto</label>
-            <input list="ns-productos-lista" id="ns-buscar" placeholder="modelo, talla o color…" value="${escapeHtml(estadoNueva.busqueda)}">
-            <datalist id="ns-productos-lista">${opcionesProductosDatalist()}</datalist>
+            <input id="ns-buscar" autocomplete="off" placeholder="modelo, talla o color…" value="${escapeHtml(estadoNueva.busqueda)}">
+            <div id="ns-sugerencias"></div>
           </div>
           <div><label>Cantidad</label><input class="qty" type="number" min="1" step="1" id="ns-cantidad" value="${escapeHtml(String(estadoNueva.cantidadTmp))}"></div>
           <div><button class="btn ghost" style="width:100%" data-accion="agregar-linea">Agregar</button></div>
         </div>
         ${msgLinea}
       </div>
+      ${formNuevoProductoHtml(estadoNueva.formNuevoProducto, 'ns')}
       <table>
         <thead><tr><th>Modelo</th><th>Talla</th><th>Color</th><th class="r">Cantidad</th><th></th></tr></thead>
         <tbody>${filas}</tbody>
@@ -381,18 +472,84 @@ nuevaEl.addEventListener('change', async (e) => {
   }
 });
 
+nuevaEl.addEventListener('input', (e) => {
+  if (e.target.id === 'ns-buscar') {
+    estadoNueva.busqueda = e.target.value;
+    estadoNueva.productoSeleccionadoId = null;
+    const cont = document.getElementById('ns-sugerencias');
+    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoNueva.productosDisponibles, estadoNueva.busqueda, 'ns');
+  }
+});
+
+nuevaEl.addEventListener('focusin', (e) => {
+  if (e.target.id === 'ns-buscar') {
+    const cont = document.getElementById('ns-sugerencias');
+    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoNueva.productosDisponibles, estadoNueva.busqueda, 'ns');
+  }
+});
+
+nuevaEl.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.sug-item')) e.preventDefault();
+});
+
 nuevaEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-accion]');
   if (!btn) return;
   const accion = btn.getAttribute('data-accion');
 
+  if (accion === 'elegir-producto-ns') {
+    const productoId = Number(btn.getAttribute('data-id'));
+    const producto = estadoNueva.productosDisponibles.find((p) => p.id === productoId);
+    if (producto) {
+      estadoNueva.busqueda = textoProducto(producto);
+      estadoNueva.productoSeleccionadoId = producto.id;
+    }
+    estadoNueva.mensajeLinea = null;
+    pintarNueva();
+    document.getElementById('ns-cantidad')?.focus();
+    return;
+  }
+
+  if (accion === 'crear-producto-nuevo-ns') {
+    const texto = btn.getAttribute('data-texto') || '';
+    estadoNueva.formNuevoProducto = partirTextoProducto(texto);
+    pintarNueva();
+    return;
+  }
+
+  if (accion === 'cancelar-producto-inline-ns') {
+    estadoNueva.formNuevoProducto = null;
+    pintarNueva();
+    return;
+  }
+
+  if (accion === 'guardar-producto-inline-ns') {
+    const modelo = document.getElementById('ns-inline-modelo').value;
+    const talla = document.getElementById('ns-inline-talla').value;
+    const color = document.getElementById('ns-inline-color').value;
+    try {
+      const producto = await window.api.productos.crear({ modelo, talla, color });
+      estadoNueva.productosDisponibles.push(producto);
+      estadoNueva.formNuevoProducto = null;
+      estadoNueva.busqueda = textoProducto(producto);
+      estadoNueva.productoSeleccionadoId = producto.id;
+      estadoNueva.mensajeLinea = null;
+      pintarNueva();
+      document.getElementById('ns-cantidad')?.focus();
+    } catch (err) {
+      estadoNueva.mensajeLinea = mensajeError(err);
+      pintarNueva();
+    }
+    return;
+  }
+
   if (accion === 'agregar-linea') {
     capturarCamposNueva();
     const texto = estadoNueva.busqueda.trim();
     const cantidad = Number(estadoNueva.cantidadTmp);
-    const producto = estadoNueva.productosDisponibles.find(
-      (p) => `${p.modelo} · ${p.talla} · ${p.color}` === texto
-    );
+    const producto = estadoNueva.productoSeleccionadoId
+      ? estadoNueva.productosDisponibles.find((p) => p.id === estadoNueva.productoSeleccionadoId)
+      : estadoNueva.productosDisponibles.find((p) => textoProducto(p) === texto);
     if (!producto) {
       estadoNueva.mensajeLinea = 'Selecciona un producto de la lista de sugerencias.';
       pintarNueva();
@@ -411,6 +568,7 @@ nuevaEl.addEventListener('click', async (e) => {
       });
     }
     estadoNueva.busqueda = '';
+    estadoNueva.productoSeleccionadoId = null;
     estadoNueva.cantidadTmp = 1;
     estadoNueva.mensajeLinea = null;
     pintarNueva();
@@ -621,6 +779,8 @@ const estadoDevolucion = {
   itemsLlegada: [], // [{productoId, modelo, talla, color, cantidad}]
   manual: {}, // { [productoId]: { [boletaItemId]: cantidadCorregida } }
   busqueda: '',
+  productoSeleccionadoId: null,
+  formNuevoProducto: null,
   cantidadTmp: 1,
   preview: null,
   mensaje: null,
@@ -644,6 +804,8 @@ async function abrirDevolucion() {
     estadoDevolucion.itemsLlegada = [];
     estadoDevolucion.manual = {};
     estadoDevolucion.busqueda = '';
+    estadoDevolucion.productoSeleccionadoId = null;
+    estadoDevolucion.formNuevoProducto = null;
     estadoDevolucion.cantidadTmp = 1;
     estadoDevolucion.preview = null;
     estadoDevolucion.mensaje = null;
@@ -693,12 +855,6 @@ function pendienteAreaParaProducto(productoId) {
   if (!estadoDevolucion.preview) return null;
   const p = estadoDevolucion.preview.productos.find((x) => x.productoId === productoId);
   return p ? p.pendienteTotal : null;
-}
-
-function opcionesProductosDatalistDevolucion() {
-  return estadoDevolucion.productosDisponibles
-    .map((p) => `<option data-id="${p.id}" value="${escapeHtml(`${p.modelo} · ${p.talla} · ${p.color}`)}"></option>`)
-    .join('');
 }
 
 function filaLlegada(it) {
@@ -812,16 +968,17 @@ function pintarDevolucion() {
       </table>
       <div class="pad" style="border-top:1px solid var(--line)">
         <div class="grid3" style="align-items:end">
-          <div>
+          <div class="campo-buscar">
             <label>Agregar otro producto</label>
-            <input list="dv-productos-lista" id="dv-buscar" placeholder="modelo, talla o color…" value="${escapeHtml(estadoDevolucion.busqueda)}" ${hayArea ? '' : 'disabled'}>
-            <datalist id="dv-productos-lista">${opcionesProductosDatalistDevolucion()}</datalist>
+            <input id="dv-buscar" autocomplete="off" placeholder="modelo, talla o color…" value="${escapeHtml(estadoDevolucion.busqueda)}" ${hayArea ? '' : 'disabled'}>
+            <div id="dv-sugerencias"></div>
           </div>
           <div><label>Cantidad</label><input class="qty" type="number" min="1" step="1" id="dv-cantidad" value="${escapeHtml(String(estadoDevolucion.cantidadTmp))}" ${hayArea ? '' : 'disabled'}></div>
           <div><button class="btn ghost" style="width:100%" data-accion="agregar-llegada" ${hayArea ? '' : 'disabled'}>Agregar a la devolución</button></div>
         </div>
         ${msgLinea}
       </div>
+      ${formNuevoProductoHtml(estadoDevolucion.formNuevoProducto, 'dv')}
     </div>
     <div class="card">
       <h3>Vista previa del reparto <em>Se salda primero la boleta más antigua · puedes corregir cualquier cantidad</em></h3>
@@ -849,6 +1006,9 @@ devolverEl.addEventListener('change', async (e) => {
     estadoDevolucion.itemsLlegada = [];
     estadoDevolucion.manual = {};
     estadoDevolucion.preview = null;
+    estadoDevolucion.busqueda = '';
+    estadoDevolucion.productoSeleccionadoId = null;
+    estadoDevolucion.formNuevoProducto = null;
     estadoDevolucion.encargados = estadoDevolucion.areaId
       ? await window.api.encargados.listar({ areaId: Number(estadoDevolucion.areaId) })
       : [];
@@ -881,18 +1041,84 @@ devolverEl.addEventListener('change', async (e) => {
   }
 });
 
+devolverEl.addEventListener('input', (e) => {
+  if (e.target.id === 'dv-buscar') {
+    estadoDevolucion.busqueda = e.target.value;
+    estadoDevolucion.productoSeleccionadoId = null;
+    const cont = document.getElementById('dv-sugerencias');
+    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoDevolucion.productosDisponibles, estadoDevolucion.busqueda, 'dv');
+  }
+});
+
+devolverEl.addEventListener('focusin', (e) => {
+  if (e.target.id === 'dv-buscar') {
+    const cont = document.getElementById('dv-sugerencias');
+    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoDevolucion.productosDisponibles, estadoDevolucion.busqueda, 'dv');
+  }
+});
+
+devolverEl.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.sug-item')) e.preventDefault();
+});
+
 devolverEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-accion]');
   if (!btn) return;
   const accion = btn.getAttribute('data-accion');
 
+  if (accion === 'elegir-producto-dv') {
+    const productoId = Number(btn.getAttribute('data-id'));
+    const producto = estadoDevolucion.productosDisponibles.find((p) => p.id === productoId);
+    if (producto) {
+      estadoDevolucion.busqueda = textoProducto(producto);
+      estadoDevolucion.productoSeleccionadoId = producto.id;
+    }
+    estadoDevolucion.mensajeLinea = null;
+    pintarDevolucion();
+    document.getElementById('dv-cantidad')?.focus();
+    return;
+  }
+
+  if (accion === 'crear-producto-nuevo-dv') {
+    const texto = btn.getAttribute('data-texto') || '';
+    estadoDevolucion.formNuevoProducto = partirTextoProducto(texto);
+    pintarDevolucion();
+    return;
+  }
+
+  if (accion === 'cancelar-producto-inline-dv') {
+    estadoDevolucion.formNuevoProducto = null;
+    pintarDevolucion();
+    return;
+  }
+
+  if (accion === 'guardar-producto-inline-dv') {
+    const modelo = document.getElementById('dv-inline-modelo').value;
+    const talla = document.getElementById('dv-inline-talla').value;
+    const color = document.getElementById('dv-inline-color').value;
+    try {
+      const producto = await window.api.productos.crear({ modelo, talla, color });
+      estadoDevolucion.productosDisponibles.push(producto);
+      estadoDevolucion.formNuevoProducto = null;
+      estadoDevolucion.busqueda = textoProducto(producto);
+      estadoDevolucion.productoSeleccionadoId = producto.id;
+      estadoDevolucion.mensajeLinea = null;
+      pintarDevolucion();
+      document.getElementById('dv-cantidad')?.focus();
+    } catch (err) {
+      estadoDevolucion.mensajeLinea = mensajeError(err);
+      pintarDevolucion();
+    }
+    return;
+  }
+
   if (accion === 'agregar-llegada') {
     capturarCamposDevolucion();
     const texto = estadoDevolucion.busqueda.trim();
     const cantidad = Number(estadoDevolucion.cantidadTmp);
-    const producto = estadoDevolucion.productosDisponibles.find(
-      (p) => `${p.modelo} · ${p.talla} · ${p.color}` === texto
-    );
+    const producto = estadoDevolucion.productoSeleccionadoId
+      ? estadoDevolucion.productosDisponibles.find((p) => p.id === estadoDevolucion.productoSeleccionadoId)
+      : estadoDevolucion.productosDisponibles.find((p) => textoProducto(p) === texto);
     if (!producto) {
       estadoDevolucion.mensajeLinea = 'Selecciona un producto de la lista de sugerencias.';
       pintarDevolucion();
@@ -913,6 +1139,7 @@ devolverEl.addEventListener('click', async (e) => {
       });
     }
     estadoDevolucion.busqueda = '';
+    estadoDevolucion.productoSeleccionadoId = null;
     estadoDevolucion.cantidadTmp = 1;
     estadoDevolucion.mensajeLinea = null;
     await recalcularPreviewDevolucion();
@@ -1515,6 +1742,8 @@ const estado = {
   filtroAreaEncargados: '',
   edicion: { producto: null, area: null, encargado: null },
   mensaje: { productos: null, areas: null, encargados: null },
+  importandoProductos: false,
+  resumenImportacion: null,
 };
 
 async function refrescarMaestros() {
@@ -1566,6 +1795,36 @@ function filaProducto(p) {
     </tr>`;
 }
 
+function filaVacioImportacion(v) {
+  return `
+    <tr>
+      <td class="num">${v.fila}</td>
+      <td>${escapeHtml(v.modelo)}</td>
+      <td>${escapeHtml(v.talla)}</td>
+      <td>${escapeHtml(v.color)}</td>
+    </tr>`;
+}
+
+function bloqueResumenImportacion() {
+  const r = estado.resumenImportacion;
+  if (!r) return '';
+  const detalleVacios = r.vacios.length
+    ? `
+      <div class="pad" style="border-top:1px solid var(--line)">
+        <p style="color:var(--muted);font-size:12.5px;margin-bottom:10px">Filas con MODELO, TALLA o COLOR vacío — revísalas y agrégalas manualmente si corresponde:</p>
+        <table>
+          <thead><tr><th>Fila</th><th>Modelo</th><th>Talla</th><th>Color</th></tr></thead>
+          <tbody>${r.vacios.map(filaVacioImportacion).join('')}</tbody>
+        </table>
+      </div>`
+    : '';
+  return `
+    <div class="ok" style="margin:0 18px 0">
+      Importación completa: <b>${r.importados}</b> nuevo(s) · <b>${r.existentes}</b> ya existían (omitidos) · <b>${r.vacios.length}</b> fila(s) incompleta(s).
+    </div>
+    ${detalleVacios}`;
+}
+
 function cardProductos() {
   const filas = estado.productos.length
     ? estado.productos.map(filaProducto).join('')
@@ -1576,12 +1835,18 @@ function cardProductos() {
 
   return `
     <div class="card">
-      <h3>Productos <em>Cada combinación modelo + talla + color es un producto distinto</em></h3>
+      <h3>Productos
+        <span style="display:flex;align-items:center;gap:14px">
+          <em>Cada combinación modelo + talla + color es un producto distinto</em>
+          <button class="btn ghost sm" data-accion="importar-productos" ${estado.importandoProductos ? 'disabled' : ''}>${estado.importandoProductos ? 'Importando…' : 'Importar desde Excel'}</button>
+        </span>
+      </h3>
       <table>
         <thead><tr><th>Modelo</th><th>Talla</th><th>Color</th><th>SKU</th><th></th></tr></thead>
         <tbody>${filas}</tbody>
       </table>
       ${msg}
+      ${bloqueResumenImportacion()}
       <div class="pad" style="border-top:1px solid var(--line)">
         <div class="grid3" style="align-items:end">
           <div><label>Modelo</label><input data-mayus placeholder="VESTIDO SFIDA" id="np-modelo"></div>
@@ -1766,6 +2031,7 @@ function limpiarMensajes() {
   estado.mensaje.productos = null;
   estado.mensaje.areas = null;
   estado.mensaje.encargados = null;
+  estado.resumenImportacion = null;
 }
 
 const maestrosEl = document.getElementById('maestros');
@@ -1818,6 +2084,26 @@ maestrosEl.addEventListener('click', async (e) => {
         estado.edicion.producto = null;
         limpiarMensajes();
         await refrescarMaestros();
+        return;
+      }
+      case 'importar-productos': {
+        estado.importandoProductos = true;
+        limpiarMensajes();
+        pintarMaestros();
+        try {
+          const resultado = await window.api.productos.importarExcel();
+          estado.importandoProductos = false;
+          if (resultado.cancelado) {
+            pintarMaestros();
+            return;
+          }
+          estado.resumenImportacion = resultado;
+          await refrescarMaestros();
+        } catch (err) {
+          estado.importandoProductos = false;
+          setMensaje('productos', 'error', mensajeError(err));
+          pintarMaestros();
+        }
         return;
       }
 

@@ -3,12 +3,14 @@
 const { ipcMain } = require('electron');
 const repo = require('./repo');
 const { exportarPendientesExcel } = require('./exportar');
+const { importarProductosDesdeExcel } = require('./importarExcel');
 const respaldo = require('./respaldo');
 
 function registrarHandlers() {
   ipcMain.handle('productos:listar', (_e, filtros) => repo.productos.listar(filtros));
   ipcMain.handle('productos:crear', (_e, datos) => repo.productos.crear(datos));
   ipcMain.handle('productos:editar', (_e, { id, ...datos }) => repo.productos.editar(id, datos));
+  ipcMain.handle('productos:importarExcel', () => importarProductosDesdeExcel());
 
   ipcMain.handle('areas:listar', (_e, filtros) => repo.areas.listar(filtros));
   ipcMain.handle('areas:crear', (_e, datos) => repo.areas.crear(datos));

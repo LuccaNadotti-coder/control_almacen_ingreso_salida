@@ -102,6 +102,50 @@ function crearProducto({ modelo, talla, color }) {
   return db.prepare('SELECT id, modelo, talla, color, sku, activo FROM productos WHERE id = ?').get(info.lastInsertRowid);
 }
 
+// Filas crudas: [{ fila, modelo, talla, color }]. Una sola transacción; si algo
+// falla a la mitad, no queda nada insertado.
+function importarProductos(filasCrudas) {
+  const db = getDb();
+  const vacios = [];
+  const candidatos = [];
+
+  filasCrudas.forEach((fila, idx) => {
+    const m = normalizarTexto(fila.modelo);
+    const t = normalizarTexto(fila.talla);
+    const c = normalizarTexto(fila.color);
+    if (!m || !t || !c) {
+      vacios.push({
+        fila: fila.fila ?? idx + 2,
+        modelo: fila.modelo == null ? '' : String(fila.modelo),
+        talla: fila.talla == null ? '' : String(fila.talla),
+        color: fila.color == null ? '' : String(fila.color),
+      });
+      return;
+    }
+    candidatos.push({ modelo: m, talla: t, color: c, sku: calcularSku(m, t, c) });
+  });
+
+  return transaccion(db, () => {
+    const stmtExiste = db.prepare('SELECT id FROM productos WHERE sku = ?');
+    const stmtInsert = db.prepare('INSERT INTO productos (modelo, talla, color, sku) VALUES (?, ?, ?, ?)');
+    const vistosEnArchivo = new Set();
+    let importados = 0;
+    let existentes = 0;
+
+    for (const p of candidatos) {
+      if (vistosEnArchivo.has(p.sku) || stmtExiste.get(p.sku)) {
+        existentes += 1;
+        continue;
+      }
+      stmtInsert.run(p.modelo, p.talla, p.color, p.sku);
+      vistosEnArchivo.add(p.sku);
+      importados += 1;
+    }
+
+    return { importados, existentes, vacios, totalFilas: filasCrudas.length };
+  });
+}
+
 function editarProducto(id, { modelo, talla, color }) {
   const db = getDb();
   const existente = db.prepare('SELECT id FROM productos WHERE id = ?').get(id);
@@ -1119,6 +1163,7 @@ module.exports = {
     listar: listarProductos,
     crear: crearProducto,
     editar: editarProducto,
+    importar: importarProductos,
   },
   boletas: {
     listar: listarBoletas,

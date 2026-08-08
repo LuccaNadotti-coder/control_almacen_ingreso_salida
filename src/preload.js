@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('api', {
     listar: (filtros) => ipcRenderer.invoke('productos:listar', filtros),
     crear: (datos) => ipcRenderer.invoke('productos:crear', datos),
     editar: (id, datos) => ipcRenderer.invoke('productos:editar', { id, ...datos }),
+    importarExcel: () => ipcRenderer.invoke('productos:importarExcel'),
   },
   areas: {
     listar: (filtros) => ipcRenderer.invoke('areas:listar', filtros),
