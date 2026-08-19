@@ -33,6 +33,36 @@ function vincularMayusculasEn(contenedor) {
   contenedor.querySelectorAll('input[data-mayus]').forEach(vincularMayusculas);
 }
 
+// ---------------------------------------------------------------------------
+// Prefijo fijo del número de boleta/retorno (SAL-0007 / RET-0007)
+// ---------------------------------------------------------------------------
+
+const PREFIJO_SALIDA = 'SAL-';
+const PREFIJO_RETORNO = 'RET-';
+
+// Solo los números que ya siguen el formato de prefijo fijo usan el widget de
+// prefijo + dígitos. Números viejos (anteriores a esta numeración) se editan
+// como texto libre para no renombrarlos sin que el usuario lo pida.
+function sigueFormatoPrefijo(numero, prefijo) {
+  return new RegExp(`^${prefijo}\\d+$`).test(String(numero ?? '').trim());
+}
+
+function soloDigitos(s) {
+  return String(s ?? '').replace(/\D/g, '');
+}
+
+// Deja pasar solo dígitos en un input mientras se escribe, preservando la
+// posición del cursor (igual criterio que vincularMayusculas).
+function filtrarSoloDigitos(input) {
+  const inicio = input.selectionStart;
+  const antes = input.value;
+  const limpio = soloDigitos(antes);
+  if (limpio === antes) return;
+  input.value = limpio;
+  const pos = Math.max(0, inicio - (antes.length - limpio.length));
+  try { input.setSelectionRange(pos, pos); } catch (_) { /* inputs sin soporte de selección */ }
+}
+
 // Fechas: la base guarda YYYY-MM-DD (formato de <input type="date">).
 function fechaHoyISO() {
   const d = new Date();
@@ -69,11 +99,11 @@ function diasDesde(iso) {
 }
 
 // ---------------------------------------------------------------------------
-// Búsqueda inteligente de productos (Nueva salida / Registrar devolución)
+// Búsqueda inteligente de productos (Registro de salidas / Registro de retornos)
 // ---------------------------------------------------------------------------
 
 function textoProducto(p) {
-  return `${p.modelo} · ${p.talla} · ${p.color}`;
+  return `${p.modelo} · ${p.color} · ${p.talla}`;
 }
 
 function normalizarBusquedaProducto(s) {
@@ -91,12 +121,12 @@ function buscarSugerenciasProducto(productos, texto) {
   if (normalizado.length < 2) return [];
   const palabras = normalizado.split(/\s+/).filter(Boolean);
   const coincidencias = productos.filter((p) => {
-    const t = normalizarBusquedaProducto(`${p.modelo} ${p.talla} ${p.color}`);
+    const t = normalizarBusquedaProducto(`${p.modelo} ${p.color} ${p.talla}`);
     return palabras.every((palabra) => t.includes(palabra));
   });
   coincidencias.sort((a, b) => {
-    const ta = normalizarBusquedaProducto(`${a.modelo} ${a.talla} ${a.color}`);
-    const tb = normalizarBusquedaProducto(`${b.modelo} ${b.talla} ${b.color}`);
+    const ta = normalizarBusquedaProducto(`${a.modelo} ${a.color} ${a.talla}`);
+    const tb = normalizarBusquedaProducto(`${b.modelo} ${b.color} ${b.talla}`);
     const aEmpieza = ta.startsWith(normalizado) ? 0 : 1;
     const bEmpieza = tb.startsWith(normalizado) ? 0 : 1;
     if (aEmpieza !== bEmpieza) return aEmpieza - bEmpieza;
@@ -105,20 +135,23 @@ function buscarSugerenciasProducto(productos, texto) {
   return coincidencias.slice(0, 8);
 }
 
-// Reparte lo escrito en modelo/talla/color lo mejor posible: último token =
-// color, penúltimo = talla, el resto = modelo. El usuario ajusta antes de guardar.
+// Reparte lo escrito en modelo/color/talla lo mejor posible: último token =
+// talla, penúltimo = color, el resto = modelo. El usuario ajusta antes de guardar.
 function partirTextoProducto(texto) {
   const palabras = String(texto ?? '').trim().split(/\s+/).filter(Boolean);
-  if (palabras.length === 0) return { modelo: '', talla: '', color: '' };
-  if (palabras.length === 1) return { modelo: palabras[0], talla: '', color: '' };
-  if (palabras.length === 2) return { modelo: palabras[0], talla: palabras[1], color: '' };
-  const color = palabras[palabras.length - 1];
-  const talla = palabras[palabras.length - 2];
+  if (palabras.length === 0) return { modelo: '', color: '', talla: '' };
+  if (palabras.length === 1) return { modelo: palabras[0], color: '', talla: '' };
+  if (palabras.length === 2) return { modelo: palabras[0], color: palabras[1], talla: '' };
+  const talla = palabras[palabras.length - 1];
+  const color = palabras[palabras.length - 2];
   const modelo = palabras.slice(0, palabras.length - 2).join(' ');
-  return { modelo, talla, color };
+  return { modelo, color, talla };
 }
 
-function htmlSugerenciasProducto(productos, texto, prefijo) {
+// Devuelve solo los items (sin el div contenedor .sugerencias): el llamador
+// decide dónde montarlos (ver mostrarPortalSugerencias, que los monta en un
+// portal fuera del flujo para que ningún ancestro con overflow los recorte).
+function itemsSugerenciasProducto(productos, texto, prefijo) {
   const textoLimpio = String(texto ?? '').trim();
   if (textoLimpio.length < 2) return '';
   const sugerencias = buscarSugerenciasProducto(productos, textoLimpio);
@@ -126,7 +159,7 @@ function htmlSugerenciasProducto(productos, texto, prefijo) {
     .map(
       (p) => `
       <div class="sug-item" data-accion="elegir-producto-${prefijo}" data-id="${p.id}">
-        <b>${escapeHtml(p.modelo)}</b> <span>${escapeHtml(p.talla)} · ${escapeHtml(p.color)}</span>
+        <b>${escapeHtml(p.modelo)}</b> <span>${escapeHtml(p.color)} · ${escapeHtml(p.talla)}</span>
       </div>`
     )
     .join('');
@@ -134,8 +167,68 @@ function htmlSugerenciasProducto(productos, texto, prefijo) {
     <div class="sug-item sug-crear" data-accion="crear-producto-nuevo-${prefijo}" data-texto="${escapeHtml(textoLimpio)}">
       + Crear producto nuevo: "${escapeHtml(textoLimpio)}"
     </div>`;
-  return `<div class="sugerencias">${itemsProductos}${itemCrear}</div>`;
+  return `${itemsProductos}${itemCrear}`;
 }
+
+// ---------------------------------------------------------------------------
+// Portal de sugerencias: vive fuera de las tarjetas (hijo directo de <body>)
+// y se posiciona con position:fixed calculado desde el input, así ninguna
+// .card con overflow:hidden lo recorta, sin importar dónde esté el buscador.
+// ---------------------------------------------------------------------------
+
+const elPortalSugerencias = document.getElementById('sugerencias-portal');
+
+function ocultarPortalSugerencias() {
+  elPortalSugerencias.style.display = 'none';
+  elPortalSugerencias.innerHTML = '';
+}
+
+function posicionarPortalSugerencias(input) {
+  const r = input.getBoundingClientRect();
+  elPortalSugerencias.style.left = `${r.left}px`;
+  elPortalSugerencias.style.top = `${r.bottom + 6}px`;
+  elPortalSugerencias.style.width = `${r.width}px`;
+}
+
+function mostrarPortalSugerencias(input, productos, texto, prefijo) {
+  const html = itemsSugerenciasProducto(productos, texto, prefijo);
+  if (!html) {
+    ocultarPortalSugerencias();
+    return;
+  }
+  elPortalSugerencias.innerHTML = html;
+  elPortalSugerencias.style.display = 'block';
+  posicionarPortalSugerencias(input);
+}
+
+window.addEventListener('scroll', ocultarPortalSugerencias, true);
+window.addEventListener('resize', ocultarPortalSugerencias);
+
+elPortalSugerencias.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.sug-item')) e.preventDefault();
+});
+
+// Los data-accion de "elegir"/"crear producto" quedan en el portal, no en las
+// vistas #nueva/#devolver; se despachan aquí hacia las funciones de cada vista
+// (elegirProductoNs/crearProductoNuevoNs/elegirProductoDv/crearProductoNuevoDv,
+// declaradas más abajo — se pueden referenciar antes porque son function
+// declarations, sujetas a hoisting).
+elPortalSugerencias.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-accion]');
+  if (!btn) return;
+  const accion = btn.getAttribute('data-accion');
+  ocultarPortalSugerencias();
+
+  if (accion === 'elegir-producto-ns') {
+    elegirProductoNs(Number(btn.getAttribute('data-id')));
+  } else if (accion === 'crear-producto-nuevo-ns') {
+    crearProductoNuevoNs(btn.getAttribute('data-texto') || '');
+  } else if (accion === 'elegir-producto-dv') {
+    elegirProductoDv(Number(btn.getAttribute('data-id')));
+  } else if (accion === 'crear-producto-nuevo-dv') {
+    crearProductoNuevoDv(btn.getAttribute('data-texto') || '');
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Router
@@ -189,10 +282,10 @@ document.addEventListener('click', (e) => {
   irA(id, rawId ? { id: Number(rawId) } : undefined);
 });
 
-// Cierra cualquier dropdown de sugerencias de producto al hacer clic fuera de él.
+// Cierra el portal de sugerencias de producto al hacer clic fuera de él.
 document.addEventListener('click', (e) => {
-  if (e.target.closest('.campo-buscar')) return;
-  document.querySelectorAll('#ns-sugerencias, #dv-sugerencias').forEach((el) => { el.innerHTML = ''; });
+  if (e.target.closest('.campo-buscar') || e.target.closest('#sugerencias-portal')) return;
+  ocultarPortalSugerencias();
 });
 
 function tagEstadoBoleta(estadoBoleta, anulada) {
@@ -255,7 +348,7 @@ function pintarSalidas() {
   sec.innerHTML = `
     <div class="head">
       <div><h2>Salidas</h2><p>Boletas emitidas hacia las áreas de trabajo.</p></div>
-      <button class="btn" data-go="nueva">Nueva salida</button>
+      <button class="btn" data-go="nueva">Registro de salidas</button>
     </div>
     <div class="kpi">
       <div><span>Boletas abiertas</span><b class="num">${k.boletasAbiertas}</b></div>
@@ -280,6 +373,7 @@ const estadoNueva = {
   modoEdicion: false,
   boletaId: null,
   numero: '',
+  numeroModo: 'prefijo', // 'prefijo' (SAL-XXXX, numero = solo dígitos) | 'libre' (numero viejo, texto completo)
   fecha: '',
   areaId: '',
   encargadoId: '',
@@ -323,7 +417,13 @@ async function abrirNuevaSalida(editarId) {
       }
       estadoNueva.modoEdicion = true;
       estadoNueva.boletaId = editarId;
-      estadoNueva.numero = detalle.boleta.numero;
+      if (sigueFormatoPrefijo(detalle.boleta.numero, PREFIJO_SALIDA)) {
+        estadoNueva.numeroModo = 'prefijo';
+        estadoNueva.numero = detalle.boleta.numero.slice(PREFIJO_SALIDA.length);
+      } else {
+        estadoNueva.numeroModo = 'libre';
+        estadoNueva.numero = detalle.boleta.numero;
+      }
       estadoNueva.fecha = detalle.boleta.fecha_salida;
       estadoNueva.areaId = String(detalle.boleta.area_id);
       estadoNueva.encargadoId = String(detalle.boleta.encargado_id);
@@ -331,15 +431,16 @@ async function abrirNuevaSalida(editarId) {
       estadoNueva.lineas = detalle.items.map((it) => ({
         productoId: it.producto_id,
         modelo: it.modelo,
-        talla: it.talla,
         color: it.color,
+        talla: it.talla,
         cantidad: it.cantidad_salida,
       }));
       await cargarEncargadosPorArea(estadoNueva.areaId);
     } else {
       estadoNueva.modoEdicion = false;
       estadoNueva.boletaId = null;
-      estadoNueva.numero = '';
+      estadoNueva.numeroModo = 'prefijo';
+      estadoNueva.numero = soloDigitos(await window.api.boletas.siguienteNumero());
       estadoNueva.fecha = fechaHoyISO();
       estadoNueva.areaId = '';
       estadoNueva.encargadoId = '';
@@ -350,7 +451,7 @@ async function abrirNuevaSalida(editarId) {
     pintarNueva();
   } catch (err) {
     document.getElementById('nueva').innerHTML =
-      `<div class="head"><div><h2>Nueva salida</h2></div></div><div class="error">${escapeHtml(mensajeError(err))}</div>`;
+      `<div class="head"><div><h2>Registro de salidas</h2></div></div><div class="error">${escapeHtml(mensajeError(err))}</div>`;
   }
 }
 
@@ -371,8 +472,8 @@ function formNuevoProductoHtml(form, prefijo) {
       <p style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Crear producto nuevo</p>
       <div class="grid3">
         <div><label>Modelo</label><input data-mayus id="${prefijo}-inline-modelo" value="${escapeHtml(form.modelo)}"></div>
-        <div><label>Talla</label><input data-mayus id="${prefijo}-inline-talla" value="${escapeHtml(form.talla)}"></div>
         <div><label>Color</label><input data-mayus id="${prefijo}-inline-color" value="${escapeHtml(form.color)}"></div>
+        <div><label>Talla</label><input data-mayus id="${prefijo}-inline-talla" value="${escapeHtml(form.talla)}"></div>
       </div>
       <div style="display:flex;gap:10px;margin-top:12px">
         <button class="btn ghost sm" data-accion="cancelar-producto-inline-${prefijo}">Cancelar</button>
@@ -385,8 +486,8 @@ function filaLinea(l) {
   return `
     <tr>
       <td>${escapeHtml(l.modelo)}</td>
-      <td>${escapeHtml(l.talla)}</td>
       <td>${escapeHtml(l.color)}</td>
+      <td>${escapeHtml(l.talla)}</td>
       <td class="r num">${l.cantidad}</td>
       <td class="r"><button class="btn ghost sm" data-accion="quitar-linea" data-id="${l.productoId}">Quitar</button></td>
     </tr>`;
@@ -408,7 +509,13 @@ function pintarNueva() {
     ? `<div class="${estadoNueva.mensaje.tipo}">${escapeHtml(estadoNueva.mensaje.texto)}</div>` : '';
   const msgLinea = estadoNueva.mensajeLinea
     ? `<div class="error" style="margin:0 18px 16px">${escapeHtml(estadoNueva.mensajeLinea)}</div>` : '';
-  const titulo = estadoNueva.modoEdicion ? 'Editar salida' : 'Nueva salida';
+  const titulo = estadoNueva.modoEdicion ? 'Editar salida' : 'Registro de salidas';
+  const avisoSinEncargados = estadoNueva.areaId && !estadoNueva.encargados.length
+    ? `<div class="error" style="margin:12px 18px 0">Esta área no tiene encargados activos. Regístralos en Maestros antes de continuar.</div>`
+    : '';
+  const campoNumero = estadoNueva.numeroModo === 'prefijo'
+    ? `<div class="input-prefijo"><span class="prefijo-fijo">${PREFIJO_SALIDA}</span><input inputmode="numeric" autocomplete="off" id="ns-numero" placeholder="0007" value="${escapeHtml(estadoNueva.numero)}"></div>`
+    : `<input data-mayus id="ns-numero" value="${escapeHtml(estadoNueva.numero)}">`;
 
   sec.innerHTML = `
     <div class="head"><div><h2>${titulo}</h2><p>Registra la boleta y las prendas que salen del almacén.</p></div></div>
@@ -416,7 +523,7 @@ function pintarNueva() {
       <h3>Datos de la boleta</h3>
       <div class="pad">
         <div class="grid2" style="margin-bottom:14px">
-          <div><label>N° de boleta</label><input data-mayus id="ns-numero" value="${escapeHtml(estadoNueva.numero)}"></div>
+          <div><label>N° de boleta</label>${campoNumero}</div>
           <div><label>Fecha de salida</label><input type="date" id="ns-fecha" value="${escapeHtml(estadoNueva.fecha)}"></div>
         </div>
         <div class="grid2">
@@ -428,6 +535,7 @@ function pintarNueva() {
           </div>
         </div>
       </div>
+      ${avisoSinEncargados}
     </div>
     <div class="card">
       <h3>Prendas</h3>
@@ -435,8 +543,7 @@ function pintarNueva() {
         <div class="grid3" style="align-items:end">
           <div class="campo-buscar">
             <label>Buscar producto</label>
-            <input id="ns-buscar" autocomplete="off" placeholder="modelo, talla o color…" value="${escapeHtml(estadoNueva.busqueda)}">
-            <div id="ns-sugerencias"></div>
+            <input id="ns-buscar" autocomplete="off" placeholder="modelo, color o talla…" value="${escapeHtml(estadoNueva.busqueda)}">
           </div>
           <div><label>Cantidad</label><input class="qty" type="number" min="1" step="1" id="ns-cantidad" value="${escapeHtml(String(estadoNueva.cantidadTmp))}"></div>
           <div><button class="btn ghost" style="width:100%" data-accion="agregar-linea">Agregar</button></div>
@@ -445,7 +552,7 @@ function pintarNueva() {
       </div>
       ${formNuevoProductoHtml(estadoNueva.formNuevoProducto, 'ns')}
       <table>
-        <thead><tr><th>Modelo</th><th>Talla</th><th>Color</th><th class="r">Cantidad</th><th></th></tr></thead>
+        <thead><tr><th>Modelo</th><th>Color</th><th>Talla</th><th class="r">Cantidad</th><th></th></tr></thead>
         <tbody>${filas}</tbody>
       </table>
       ${msg}
@@ -462,60 +569,61 @@ function pintarNueva() {
 
 const nuevaEl = document.getElementById('nueva');
 
+// Primer encargado activo por orden de creación (id ascendente = orden de alta).
+function primerEncargadoActivoId(encargados) {
+  if (!encargados.length) return '';
+  const primero = [...encargados].sort((a, b) => a.id - b.id)[0];
+  return String(primero.id);
+}
+
 nuevaEl.addEventListener('change', async (e) => {
   if (e.target.id === 'ns-area') {
     capturarCamposNueva();
     estadoNueva.areaId = e.target.value;
-    estadoNueva.encargadoId = '';
     await cargarEncargadosPorArea(estadoNueva.areaId);
+    estadoNueva.encargadoId = primerEncargadoActivoId(estadoNueva.encargados);
     pintarNueva();
   }
 });
 
 nuevaEl.addEventListener('input', (e) => {
+  if (e.target.id === 'ns-numero' && estadoNueva.numeroModo === 'prefijo') {
+    filtrarSoloDigitos(e.target);
+    return;
+  }
   if (e.target.id === 'ns-buscar') {
     estadoNueva.busqueda = e.target.value;
     estadoNueva.productoSeleccionadoId = null;
-    const cont = document.getElementById('ns-sugerencias');
-    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoNueva.productosDisponibles, estadoNueva.busqueda, 'ns');
+    mostrarPortalSugerencias(e.target, estadoNueva.productosDisponibles, estadoNueva.busqueda, 'ns');
   }
 });
 
 nuevaEl.addEventListener('focusin', (e) => {
   if (e.target.id === 'ns-buscar') {
-    const cont = document.getElementById('ns-sugerencias');
-    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoNueva.productosDisponibles, estadoNueva.busqueda, 'ns');
+    mostrarPortalSugerencias(e.target, estadoNueva.productosDisponibles, estadoNueva.busqueda, 'ns');
   }
 });
 
-nuevaEl.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.sug-item')) e.preventDefault();
-});
+function elegirProductoNs(productoId) {
+  const producto = estadoNueva.productosDisponibles.find((p) => p.id === productoId);
+  if (producto) {
+    estadoNueva.busqueda = textoProducto(producto);
+    estadoNueva.productoSeleccionadoId = producto.id;
+  }
+  estadoNueva.mensajeLinea = null;
+  pintarNueva();
+  document.getElementById('ns-cantidad')?.focus();
+}
+
+function crearProductoNuevoNs(texto) {
+  estadoNueva.formNuevoProducto = partirTextoProducto(texto);
+  pintarNueva();
+}
 
 nuevaEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-accion]');
   if (!btn) return;
   const accion = btn.getAttribute('data-accion');
-
-  if (accion === 'elegir-producto-ns') {
-    const productoId = Number(btn.getAttribute('data-id'));
-    const producto = estadoNueva.productosDisponibles.find((p) => p.id === productoId);
-    if (producto) {
-      estadoNueva.busqueda = textoProducto(producto);
-      estadoNueva.productoSeleccionadoId = producto.id;
-    }
-    estadoNueva.mensajeLinea = null;
-    pintarNueva();
-    document.getElementById('ns-cantidad')?.focus();
-    return;
-  }
-
-  if (accion === 'crear-producto-nuevo-ns') {
-    const texto = btn.getAttribute('data-texto') || '';
-    estadoNueva.formNuevoProducto = partirTextoProducto(texto);
-    pintarNueva();
-    return;
-  }
 
   if (accion === 'cancelar-producto-inline-ns') {
     estadoNueva.formNuevoProducto = null;
@@ -564,7 +672,7 @@ nuevaEl.addEventListener('click', async (e) => {
     if (existente) existente.cantidad += cantidad;
     else {
       estadoNueva.lineas.push({
-        productoId: producto.id, modelo: producto.modelo, talla: producto.talla, color: producto.color, cantidad,
+        productoId: producto.id, modelo: producto.modelo, color: producto.color, talla: producto.talla, cantidad,
       });
     }
     estadoNueva.busqueda = '';
@@ -592,8 +700,12 @@ nuevaEl.addEventListener('click', async (e) => {
     capturarCamposNueva();
     estadoNueva.mensaje = null;
     try {
+      const digitos = estadoNueva.numero.trim();
+      const numeroFinal = estadoNueva.numeroModo === 'prefijo'
+        ? (digitos ? `${PREFIJO_SALIDA}${digitos.padStart(4, '0')}` : '')
+        : estadoNueva.numero;
       const payload = {
-        numero: estadoNueva.numero,
+        numero: numeroFinal,
         fechaSalida: estadoNueva.fecha,
         areaId: Number(estadoNueva.areaId),
         encargadoId: Number(estadoNueva.encargadoId),
@@ -635,8 +747,8 @@ function filaDetalleItem(it) {
   return `
     <tr>
       <td>${escapeHtml(it.modelo)}</td>
-      <td>${escapeHtml(it.talla)}</td>
       <td>${escapeHtml(it.color)}</td>
+      <td>${escapeHtml(it.talla)}</td>
       <td class="r num">${it.cantidad_salida}</td>
       <td class="r num">${it.cantidad_devuelta}</td>
       <td class="r num ${it.cantidad_falta > 0 ? 'falta' : 'cero'}">${it.cantidad_falta}</td>
@@ -665,7 +777,7 @@ function pintarDetalle() {
     <button class="btn ghost" data-go="salidas">Volver</button>
     ${puedeEditar ? '<button class="btn ghost" data-accion="editar-boleta">Editar</button>' : ''}
     ${puedeAnular ? '<button class="btn ghost" data-accion="anular-boleta">Anular</button>' : ''}
-    <button class="btn" data-go="devolver">Registrar devolución</button>`;
+    <button class="btn" data-go="devolver">Registro de retornos</button>`;
 
   const avisoAnulada = boleta.anulada
     ? `<div class="error">Boleta anulada. Motivo: ${escapeHtml(boleta.motivo_anulacion || '')}</div>` : '';
@@ -687,7 +799,7 @@ function pintarDetalle() {
 
   const retornosHtml = retornos.length
     ? `<ul class="time">${retornos.map((r) => {
-        const detalle = r.detalle.map((d) => `${escapeHtml(d.modelo)} ${escapeHtml(d.talla)} ${escapeHtml(d.color)} (${d.cantidad})`).join(', ');
+        const detalle = r.detalle.map((d) => `${escapeHtml(d.modelo)} ${escapeHtml(d.color)} ${escapeHtml(d.talla)} (${d.cantidad})`).join(', ');
         return `
         <li><b>${escapeHtml(r.numero)} · ${formatoFechaLarga(r.fecha)}</b>
         <p>Trajo ${r.total_retorno} prendas en total, de las cuales <b>${r.aplicado_aqui}</b> se aplicaron aquí — ${detalle}</p></li>`;
@@ -708,7 +820,7 @@ function pintarDetalle() {
     <div class="card">
       <h3>Reconciliación por producto</h3>
       <table>
-        <thead><tr><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Salió</th><th class="r">Devuelto</th><th class="r">Falta</th><th>Avance</th></tr></thead>
+        <thead><tr><th>Producto</th><th>Color</th><th>Talla</th><th class="r">Salió</th><th class="r">Devuelto</th><th class="r">Falta</th><th>Avance</th></tr></thead>
         <tbody>${filas}</tbody>
       </table>
       <p class="note">Salieron <b class="num">${totalSalio}</b> · devueltas <b class="num">${totalDevuelto}</b> · <span class="falta">faltan ${totalFalta}</span></p>
@@ -776,7 +888,7 @@ const estadoDevolucion = {
   areas: [],
   encargados: [],
   productosDisponibles: [],
-  itemsLlegada: [], // [{productoId, modelo, talla, color, cantidad}]
+  itemsLlegada: [], // [{productoId, modelo, color, talla, cantidad}]
   manual: {}, // { [productoId]: { [boletaItemId]: cantidadCorregida } }
   busqueda: '',
   productoSeleccionadoId: null,
@@ -789,13 +901,14 @@ const estadoDevolucion = {
 
 async function abrirDevolucion() {
   try {
-    const [areas, productos] = await Promise.all([
+    const [areas, productos, numero] = await Promise.all([
       window.api.areas.listar(),
       window.api.productos.listar(),
+      window.api.retornos.siguienteNumero(),
     ]);
     estadoDevolucion.areas = areas;
     estadoDevolucion.productosDisponibles = productos;
-    estadoDevolucion.numero = '';
+    estadoDevolucion.numero = soloDigitos(numero);
     estadoDevolucion.fecha = fechaHoyISO();
     estadoDevolucion.areaId = '';
     estadoDevolucion.encargadoId = '';
@@ -813,7 +926,7 @@ async function abrirDevolucion() {
     pintarDevolucion();
   } catch (err) {
     document.getElementById('devolver').innerHTML =
-      `<div class="head"><div><h2>Registrar devolución</h2></div></div><div class="error">${escapeHtml(mensajeError(err))}</div>`;
+      `<div class="head"><div><h2>Registro de retornos</h2></div></div><div class="error">${escapeHtml(mensajeError(err))}</div>`;
   }
 }
 
@@ -863,8 +976,8 @@ function filaLlegada(it) {
   return `
     <tr>
       <td>${escapeHtml(it.modelo)}</td>
-      <td>${escapeHtml(it.talla)}</td>
       <td>${escapeHtml(it.color)}</td>
+      <td>${escapeHtml(it.talla)}</td>
       <td class="r num ${pendienteArea > 0 ? 'falta' : 'cero'}">${pendienteTxt}</td>
       <td class="r"><input class="qty" type="number" min="0" step="1" value="${it.cantidad}" data-llega="${it.productoId}"></td>
       <td class="r"><button class="btn ghost sm" data-accion="quitar-llegada" data-id="${it.productoId}">Quitar</button></td>
@@ -905,7 +1018,7 @@ function pintarPreviewReparto() {
 
         return `
           <div class="prod">
-            <div class="prod-h"><b>${escapeHtml(p.modelo)} · ${escapeHtml(p.talla)} · ${escapeHtml(p.color)}</b><span class="num">llegan ${p.cantidadLlega}</span></div>
+            <div class="prod-h"><b>${escapeHtml(p.modelo)} · ${escapeHtml(p.color)} · ${escapeHtml(p.talla)}</b><span class="num">llegan ${p.cantidadLlega}</span></div>
             ${rows}${exc}
           </div>`;
       }).join('')
@@ -940,16 +1053,19 @@ function pintarDevolucion() {
     ? `<div class="${estadoDevolucion.mensaje.tipo}">${escapeHtml(estadoDevolucion.mensaje.texto)}</div>` : '';
   const { preview: previewHtml, aviso: avisoHtml, resumen: resumenHtml } = pintarPreviewReparto();
   const hayArea = Boolean(estadoDevolucion.areaId);
+  const avisoSinEncargados = hayArea && !estadoDevolucion.encargados.length
+    ? `<div class="error" style="margin:12px 18px 0">Esta área no tiene encargados activos. Regístralos en Maestros antes de continuar.</div>`
+    : '';
 
   sec.innerHTML = `
     <div class="head">
-      <div><h2>Registrar devolución</h2><p>El área devuelve prendas mezcladas de varias salidas. Indica solo cuánto llega; el sistema lo reparte contra las boletas más antiguas y tú corriges si hace falta.</p></div>
+      <div><h2>Registro de retornos</h2><p>El área devuelve prendas mezcladas de varias salidas. Indica solo cuánto llega; el sistema lo reparte contra las boletas más antiguas y tú corriges si hace falta.</p></div>
     </div>
     <div class="card">
       <h3>Boleta de retorno</h3>
       <div class="pad">
         <div class="grid4">
-          <div><label>N° de retorno</label><input data-mayus id="dv-numero" value="${escapeHtml(estadoDevolucion.numero)}"></div>
+          <div><label>N° de retorno</label><div class="input-prefijo"><span class="prefijo-fijo">${PREFIJO_RETORNO}</span><input inputmode="numeric" autocomplete="off" id="dv-numero" placeholder="0007" value="${escapeHtml(estadoDevolucion.numero)}"></div></div>
           <div><label>Área</label><select id="dv-area"><option value="">Selecciona…</option>${opcionesArea}</select></div>
           <div><label>Fecha</label><input type="date" id="dv-fecha" value="${escapeHtml(estadoDevolucion.fecha)}"></div>
           <div><label>Entrega</label>
@@ -959,19 +1075,19 @@ function pintarDevolucion() {
           </div>
         </div>
       </div>
+      ${avisoSinEncargados}
     </div>
     <div class="card">
       <h3>¿Qué llegó? <em>Cantidad total, sin importar de qué boleta salió</em></h3>
       <table>
-        <thead><tr><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Pendiente del área</th><th class="r">Llega ahora</th><th></th></tr></thead>
+        <thead><tr><th>Producto</th><th>Color</th><th>Talla</th><th class="r">Pendiente del área</th><th class="r">Llega ahora</th><th></th></tr></thead>
         <tbody>${filasLlegada}</tbody>
       </table>
       <div class="pad" style="border-top:1px solid var(--line)">
         <div class="grid3" style="align-items:end">
           <div class="campo-buscar">
             <label>Agregar otro producto</label>
-            <input id="dv-buscar" autocomplete="off" placeholder="modelo, talla o color…" value="${escapeHtml(estadoDevolucion.busqueda)}" ${hayArea ? '' : 'disabled'}>
-            <div id="dv-sugerencias"></div>
+            <input id="dv-buscar" autocomplete="off" placeholder="modelo, color o talla…" value="${escapeHtml(estadoDevolucion.busqueda)}" ${hayArea ? '' : 'disabled'}>
           </div>
           <div><label>Cantidad</label><input class="qty" type="number" min="1" step="1" id="dv-cantidad" value="${escapeHtml(String(estadoDevolucion.cantidadTmp))}" ${hayArea ? '' : 'disabled'}></div>
           <div><button class="btn ghost" style="width:100%" data-accion="agregar-llegada" ${hayArea ? '' : 'disabled'}>Agregar a la devolución</button></div>
@@ -1002,7 +1118,6 @@ devolverEl.addEventListener('change', async (e) => {
   if (e.target.id === 'dv-area') {
     capturarCamposDevolucion();
     estadoDevolucion.areaId = e.target.value;
-    estadoDevolucion.encargadoId = '';
     estadoDevolucion.itemsLlegada = [];
     estadoDevolucion.manual = {};
     estadoDevolucion.preview = null;
@@ -1012,6 +1127,7 @@ devolverEl.addEventListener('change', async (e) => {
     estadoDevolucion.encargados = estadoDevolucion.areaId
       ? await window.api.encargados.listar({ areaId: Number(estadoDevolucion.areaId) })
       : [];
+    estadoDevolucion.encargadoId = primerEncargadoActivoId(estadoDevolucion.encargados);
     pintarDevolucion();
     return;
   }
@@ -1042,49 +1158,43 @@ devolverEl.addEventListener('change', async (e) => {
 });
 
 devolverEl.addEventListener('input', (e) => {
+  if (e.target.id === 'dv-numero') {
+    filtrarSoloDigitos(e.target);
+    return;
+  }
   if (e.target.id === 'dv-buscar') {
     estadoDevolucion.busqueda = e.target.value;
     estadoDevolucion.productoSeleccionadoId = null;
-    const cont = document.getElementById('dv-sugerencias');
-    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoDevolucion.productosDisponibles, estadoDevolucion.busqueda, 'dv');
+    mostrarPortalSugerencias(e.target, estadoDevolucion.productosDisponibles, estadoDevolucion.busqueda, 'dv');
   }
 });
 
 devolverEl.addEventListener('focusin', (e) => {
   if (e.target.id === 'dv-buscar') {
-    const cont = document.getElementById('dv-sugerencias');
-    if (cont) cont.innerHTML = htmlSugerenciasProducto(estadoDevolucion.productosDisponibles, estadoDevolucion.busqueda, 'dv');
+    mostrarPortalSugerencias(e.target, estadoDevolucion.productosDisponibles, estadoDevolucion.busqueda, 'dv');
   }
 });
 
-devolverEl.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.sug-item')) e.preventDefault();
-});
+function elegirProductoDv(productoId) {
+  const producto = estadoDevolucion.productosDisponibles.find((p) => p.id === productoId);
+  if (producto) {
+    estadoDevolucion.busqueda = textoProducto(producto);
+    estadoDevolucion.productoSeleccionadoId = producto.id;
+  }
+  estadoDevolucion.mensajeLinea = null;
+  pintarDevolucion();
+  document.getElementById('dv-cantidad')?.focus();
+}
+
+function crearProductoNuevoDv(texto) {
+  estadoDevolucion.formNuevoProducto = partirTextoProducto(texto);
+  pintarDevolucion();
+}
 
 devolverEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-accion]');
   if (!btn) return;
   const accion = btn.getAttribute('data-accion');
-
-  if (accion === 'elegir-producto-dv') {
-    const productoId = Number(btn.getAttribute('data-id'));
-    const producto = estadoDevolucion.productosDisponibles.find((p) => p.id === productoId);
-    if (producto) {
-      estadoDevolucion.busqueda = textoProducto(producto);
-      estadoDevolucion.productoSeleccionadoId = producto.id;
-    }
-    estadoDevolucion.mensajeLinea = null;
-    pintarDevolucion();
-    document.getElementById('dv-cantidad')?.focus();
-    return;
-  }
-
-  if (accion === 'crear-producto-nuevo-dv') {
-    const texto = btn.getAttribute('data-texto') || '';
-    estadoDevolucion.formNuevoProducto = partirTextoProducto(texto);
-    pintarDevolucion();
-    return;
-  }
 
   if (accion === 'cancelar-producto-inline-dv') {
     estadoDevolucion.formNuevoProducto = null;
@@ -1135,7 +1245,7 @@ devolverEl.addEventListener('click', async (e) => {
       delete estadoDevolucion.manual[producto.id];
     } else {
       estadoDevolucion.itemsLlegada.push({
-        productoId: producto.id, modelo: producto.modelo, talla: producto.talla, color: producto.color, cantidad,
+        productoId: producto.id, modelo: producto.modelo, color: producto.color, talla: producto.talla, cantidad,
       });
     }
     estadoDevolucion.busqueda = '';
@@ -1164,8 +1274,10 @@ devolverEl.addEventListener('click', async (e) => {
     capturarCamposDevolucion();
     estadoDevolucion.mensaje = null;
     try {
+      const digitosRet = estadoDevolucion.numero.trim();
+      const numeroFinalRet = digitosRet ? `${PREFIJO_RETORNO}${digitosRet.padStart(4, '0')}` : '';
       await window.api.retornos.crear({
-        numero: estadoDevolucion.numero,
+        numero: numeroFinalRet,
         areaId: Number(estadoDevolucion.areaId),
         encargadoId: estadoDevolucion.encargadoId ? Number(estadoDevolucion.encargadoId) : null,
         fecha: estadoDevolucion.fecha,
@@ -1254,8 +1366,8 @@ function filaSinUbicar(row) {
     <tr>
       <td class="num">${escapeHtml(row.retorno_numero)}</td>
       <td>${escapeHtml(row.modelo)}</td>
-      <td>${escapeHtml(row.talla)}</td>
       <td>${escapeHtml(row.color)}</td>
+      <td>${escapeHtml(row.talla)}</td>
       <td class="r num" style="color:#E3B95F">${row.sin_ubicar}</td>
       <td class="r"><button class="btn ghost sm" data-accion="abrir-asignar" data-id="${row.retorno_item_id}" data-producto="${row.producto_id}" data-area="${row.area_id}">Asignar a boleta</button></td>
     </tr>`;
@@ -1280,7 +1392,7 @@ function pintarRetornos() {
   sec.innerHTML = `
     <div class="head">
       <div><h2>Retornos</h2><p>Boletas que emiten las áreas al devolver. Una puede saldar varias salidas a la vez.</p></div>
-      <button class="btn" data-go="devolver">Registrar devolución</button>
+      <button class="btn" data-go="devolver">Registro de retornos</button>
     </div>
     <div class="card">
       <table>
@@ -1291,7 +1403,7 @@ function pintarRetornos() {
     <div class="card">
       <h3>Prendas sin ubicar <em>Llegaron de más; no se asignaron a ninguna boleta</em></h3>
       <table>
-        <thead><tr><th>Retorno</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Cantidad</th><th></th></tr></thead>
+        <thead><tr><th>Retorno</th><th>Producto</th><th>Color</th><th>Talla</th><th class="r">Cantidad</th><th></th></tr></thead>
         <tbody>${filasSinUbicar}</tbody>
       </table>
       ${msg}
@@ -1421,8 +1533,8 @@ function filaPendiente(p) {
       <td class="num">${escapeHtml(p.numero)}</td>
       <td>${escapeHtml(p.area_nombre)}</td>
       <td>${escapeHtml(p.modelo)}</td>
-      <td>${escapeHtml(p.talla)}</td>
       <td>${escapeHtml(p.color)}</td>
+      <td>${escapeHtml(p.talla)}</td>
       <td class="r num">${p.cantidad_salida}</td>
       <td class="r num">${p.cantidad_devuelta}</td>
       <td class="r num falta">${p.cantidad_falta}</td>
@@ -1479,7 +1591,7 @@ function pintarPendientes() {
         </div>
       </div>
       <table>
-        <thead><tr><th>Boleta</th><th>Área</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Salió</th><th class="r">Devuelto</th><th class="r">Falta</th><th class="r">Días</th></tr></thead>
+        <thead><tr><th>Boleta</th><th>Área</th><th>Producto</th><th>Color</th><th>Talla</th><th class="r">Salió</th><th class="r">Devuelto</th><th class="r">Falta</th><th class="r">Días</th></tr></thead>
         <tbody>${filas}</tbody>
       </table>
       ${msg}
@@ -1569,8 +1681,8 @@ function filaDescuadre(d) {
     <tr>
       <td class="num">${escapeHtml(d.numero)}</td>
       <td>${escapeHtml(d.modelo)}</td>
-      <td>${escapeHtml(d.talla)}</td>
       <td>${escapeHtml(d.color)}</td>
+      <td>${escapeHtml(d.talla)}</td>
       <td class="r num">${d.cantidadDevuelta}</td>
       <td class="r num">${d.sumaAsignaciones}</td>
       <td class="r num falta">${d.diferencia}</td>
@@ -1609,7 +1721,7 @@ function pintarAjustes() {
           Se encontraron ${estadoAjustes.integridad.descuadres.length} descuadre(s) de ${estadoAjustes.integridad.revisadas} línea(s) revisadas.
         </div>
         <table>
-          <thead><tr><th>Boleta</th><th>Producto</th><th>Talla</th><th>Color</th><th class="r">Devuelto registrado</th><th class="r">Suma real</th><th class="r">Diferencia</th></tr></thead>
+          <thead><tr><th>Boleta</th><th>Producto</th><th>Color</th><th>Talla</th><th class="r">Devuelto registrado</th><th class="r">Suma real</th><th class="r">Diferencia</th></tr></thead>
           <tbody>${filas}</tbody>
         </table>
         <div class="pad">
@@ -1735,6 +1847,12 @@ ajustesEl.addEventListener('click', async (e) => {
 
 const estado = {
   productos: [],
+  productosPagina: 1,
+  productosPorPagina: 10,
+  productosBusqueda: '',
+  productosTotal: 0,
+  productosTotalPaginas: 1,
+  cargandoProductos: false,
   areas: [],
   encargados: [],
   mostrarAreasInactivas: false,
@@ -1746,21 +1864,66 @@ const estado = {
   resumenImportacion: null,
 };
 
-async function refrescarMaestros() {
+// No usamos toLocaleString('es-PE'): el ICU reducido que trae Electron por
+// defecto no incluye datos de esa locale y cae en el separador inglés (coma).
+// Formateamos a mano para garantizar el punto de miles ("27.439").
+function formatoMiles(n) {
+  return String(Math.trunc(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+// Paginado en servidor: solo se traen y pintan las ~50 filas de la página
+// actual, nunca el catálogo completo (que puede rondar los 27.000 productos).
+async function cargarProductosPagina() {
+  estado.cargandoProductos = true;
+  pintarMaestros();
   try {
-    const [productos, areas, encargados] = await Promise.all([
-      window.api.productos.listar({ incluirInactivos: true }),
+    const resultado = await window.api.productos.listarPagina({
+      pagina: estado.productosPagina,
+      porPagina: estado.productosPorPagina,
+      busqueda: estado.productosBusqueda,
+      incluirInactivos: true,
+    });
+    estado.productos = resultado.productos;
+    estado.productosTotal = resultado.total;
+    estado.productosTotalPaginas = resultado.totalPaginas;
+    estado.productosPagina = resultado.pagina;
+  } catch (err) {
+    setMensaje('productos', 'error', mensajeError(err));
+  }
+  estado.cargandoProductos = false;
+  pintarMaestros();
+}
+
+async function refrescarAreasEncargados() {
+  try {
+    const [areas, encargados] = await Promise.all([
       window.api.areas.listar({ incluirInactivos: true }),
       window.api.encargados.listar({ incluirInactivos: true }),
     ]);
-    estado.productos = productos;
     estado.areas = areas;
     estado.encargados = encargados;
-    pintarMaestros();
+  } catch (err) {
+    setMensaje('areas', 'error', mensajeError(err));
+  }
+  pintarMaestros();
+}
+
+async function refrescarMaestros() {
+  estado.cargandoProductos = true;
+  pintarMaestros();
+  try {
+    const [areas, encargados] = await Promise.all([
+      window.api.areas.listar({ incluirInactivos: true }),
+      window.api.encargados.listar({ incluirInactivos: true }),
+    ]);
+    estado.areas = areas;
+    estado.encargados = encargados;
   } catch (err) {
     document.getElementById('maestros').innerHTML =
       `<div class="head"><div><h2>Maestros</h2></div></div><div class="error">${escapeHtml(mensajeError(err))}</div>`;
+    return;
   }
+  await cargarProductosPagina();
 }
 
 function tagEstado(activo) {
@@ -1776,8 +1939,8 @@ function filaProducto(p) {
     return `
       <tr>
         <td><input data-mayus value="${escapeHtml(p.modelo)}" id="ep-modelo"></td>
-        <td><input data-mayus value="${escapeHtml(p.talla)}" id="ep-talla"></td>
         <td><input data-mayus value="${escapeHtml(p.color)}" id="ep-color"></td>
+        <td><input data-mayus value="${escapeHtml(p.talla)}" id="ep-talla"></td>
         <td class="sku num" colspan="1">${escapeHtml(p.sku)}</td>
         <td class="r">
           <button class="btn sm" data-accion="guardar-producto" data-id="${p.id}">Guardar</button>
@@ -1788,8 +1951,8 @@ function filaProducto(p) {
   return `
     <tr>
       <td>${escapeHtml(p.modelo)}</td>
-      <td>${escapeHtml(p.talla)}</td>
       <td>${escapeHtml(p.color)}</td>
+      <td>${escapeHtml(p.talla)}</td>
       <td class="sku num">${escapeHtml(p.sku)}</td>
       <td class="r"><button class="btn ghost sm" data-accion="editar-producto" data-id="${p.id}">Editar</button></td>
     </tr>`;
@@ -1800,8 +1963,8 @@ function filaVacioImportacion(v) {
     <tr>
       <td class="num">${v.fila}</td>
       <td>${escapeHtml(v.modelo)}</td>
-      <td>${escapeHtml(v.talla)}</td>
       <td>${escapeHtml(v.color)}</td>
+      <td>${escapeHtml(v.talla)}</td>
     </tr>`;
 }
 
@@ -1811,9 +1974,9 @@ function bloqueResumenImportacion() {
   const detalleVacios = r.vacios.length
     ? `
       <div class="pad" style="border-top:1px solid var(--line)">
-        <p style="color:var(--muted);font-size:12.5px;margin-bottom:10px">Filas con MODELO, TALLA o COLOR vacío — revísalas y agrégalas manualmente si corresponde:</p>
+        <p style="color:var(--muted);font-size:12.5px;margin-bottom:10px">Filas con MODELO, COLOR o TALLA vacío — revísalas y agrégalas manualmente si corresponde:</p>
         <table>
-          <thead><tr><th>Fila</th><th>Modelo</th><th>Talla</th><th>Color</th></tr></thead>
+          <thead><tr><th>Fila</th><th>Modelo</th><th>Color</th><th>Talla</th></tr></thead>
           <tbody>${r.vacios.map(filaVacioImportacion).join('')}</tbody>
         </table>
       </div>`
@@ -1826,32 +1989,52 @@ function bloqueResumenImportacion() {
 }
 
 function cardProductos() {
-  const filas = estado.productos.length
-    ? estado.productos.map(filaProducto).join('')
-    : `<tr><td colspan="5" class="vacio">Sin productos registrados todavía.</td></tr>`;
+  const filas = estado.cargandoProductos
+    ? `<tr><td colspan="5" class="vacio">Cargando…</td></tr>`
+    : estado.productos.length
+      ? estado.productos.map(filaProducto).join('')
+      : `<tr><td colspan="5" class="vacio">Sin productos para estos filtros.</td></tr>`;
 
   const msg = estado.mensaje.productos
     ? `<div class="${estado.mensaje.productos.tipo}">${escapeHtml(estado.mensaje.productos.texto)}</div>` : '';
+
+  const totalTxt = `${formatoMiles(estado.productosTotal)} producto${estado.productosTotal === 1 ? '' : 's'}`;
+  const puedeAnterior = !estado.cargandoProductos && estado.productosPagina > 1;
+  const puedeSiguiente = !estado.cargandoProductos && estado.productosPagina < estado.productosTotalPaginas;
 
   return `
     <div class="card">
       <h3>Productos
         <span style="display:flex;align-items:center;gap:14px">
-          <em>Cada combinación modelo + talla + color es un producto distinto</em>
+          <em>Cada combinación modelo + color + talla es un producto distinto · ${totalTxt}</em>
           <button class="btn ghost sm" data-accion="importar-productos" ${estado.importandoProductos ? 'disabled' : ''}>${estado.importandoProductos ? 'Importando…' : 'Importar desde Excel'}</button>
         </span>
       </h3>
+      <div class="pad" style="border-bottom:1px solid var(--line)">
+        <div><label>Buscar</label><input id="mp-buscar" autocomplete="off" placeholder="Buscar por modelo, color o talla…" value="${escapeHtml(estado.productosBusqueda)}"></div>
+      </div>
       <table>
-        <thead><tr><th>Modelo</th><th>Talla</th><th>Color</th><th>SKU</th><th></th></tr></thead>
+        <thead><tr><th>Modelo</th><th>Color</th><th>Talla</th><th>SKU</th><th></th></tr></thead>
         <tbody>${filas}</tbody>
       </table>
       ${msg}
       ${bloqueResumenImportacion()}
+      <div class="foot">
+        <span class="resumen">
+          Mostrar
+          <select id="mp-porpagina" style="width:auto;display:inline-block;padding:4px 8px">${[10, 25, 50].map((n) => `<option value="${n}" ${n === estado.productosPorPagina ? 'selected' : ''}>${n}</option>`).join('')}</select>
+          · Página ${estado.productosPagina} de ${estado.productosTotalPaginas}
+        </span>
+        <div style="display:flex;gap:10px">
+          <button class="btn ghost sm" data-accion="mp-anterior" ${puedeAnterior ? '' : 'disabled'}>Anterior</button>
+          <button class="btn ghost sm" data-accion="mp-siguiente" ${puedeSiguiente ? '' : 'disabled'}>Siguiente</button>
+        </div>
+      </div>
       <div class="pad" style="border-top:1px solid var(--line)">
         <div class="grid3" style="align-items:end">
           <div><label>Modelo</label><input data-mayus placeholder="VESTIDO SFIDA" id="np-modelo"></div>
-          <div><label>Talla</label><input data-mayus placeholder="M" id="np-talla"></div>
           <div><label>Color</label><input data-mayus placeholder="NEGRO" id="np-color"></div>
+          <div><label>Talla</label><input data-mayus placeholder="M" id="np-talla"></div>
         </div>
         <div style="margin-top:12px">
           <button class="btn ghost" data-accion="crear-producto">Agregar producto</button>
@@ -2014,7 +2197,7 @@ function pintarMaestros() {
   const sec = document.getElementById('maestros');
   sec.innerHTML = `
     <div class="head">
-      <div><h2>Maestros</h2><p>Catálogo base. Cada combinación modelo + talla + color es un producto distinto.</p></div>
+      <div><h2>Maestros</h2><p>Catálogo base. Cada combinación modelo + color + talla es un producto distinto.</p></div>
     </div>
     ${cardProductos()}
     ${cardAreas()}
@@ -2046,7 +2229,29 @@ maestrosEl.addEventListener('change', (e) => {
   } else if (e.target.id === 'filtro-area-encargados') {
     estado.filtroAreaEncargados = e.target.value;
     pintarMaestros();
+  } else if (e.target.id === 'mp-porpagina') {
+    estado.productosPorPagina = Number(e.target.value);
+    estado.productosPagina = 1;
+    cargarProductosPagina();
   }
+});
+
+let temporizadorBusquedaProductos = null;
+
+maestrosEl.addEventListener('input', (e) => {
+  if (e.target.id !== 'mp-buscar') return;
+  estado.productosBusqueda = e.target.value;
+  clearTimeout(temporizadorBusquedaProductos);
+  temporizadorBusquedaProductos = setTimeout(async () => {
+    estado.productosPagina = 1;
+    await cargarProductosPagina();
+    const input = document.getElementById('mp-buscar');
+    if (input) {
+      input.focus();
+      const pos = input.value.length;
+      input.setSelectionRange(pos, pos);
+    }
+  }, 350);
 });
 
 maestrosEl.addEventListener('click', async (e) => {
@@ -2060,11 +2265,11 @@ maestrosEl.addEventListener('click', async (e) => {
       // Productos
       case 'crear-producto': {
         const modelo = document.getElementById('np-modelo').value;
-        const talla = document.getElementById('np-talla').value;
         const color = document.getElementById('np-color').value;
+        const talla = document.getElementById('np-talla').value;
         await window.api.productos.crear({ modelo, talla, color });
         limpiarMensajes();
-        await refrescarMaestros();
+        await cargarProductosPagina();
         return;
       }
       case 'editar-producto':
@@ -2078,12 +2283,12 @@ maestrosEl.addEventListener('click', async (e) => {
         return;
       case 'guardar-producto': {
         const modelo = document.getElementById('ep-modelo').value;
-        const talla = document.getElementById('ep-talla').value;
         const color = document.getElementById('ep-color').value;
+        const talla = document.getElementById('ep-talla').value;
         await window.api.productos.editar(Number(id), { modelo, talla, color });
         estado.edicion.producto = null;
         limpiarMensajes();
-        await refrescarMaestros();
+        await cargarProductosPagina();
         return;
       }
       case 'importar-productos': {
@@ -2098,7 +2303,8 @@ maestrosEl.addEventListener('click', async (e) => {
             return;
           }
           estado.resumenImportacion = resultado;
-          await refrescarMaestros();
+          estado.productosPagina = 1;
+          await cargarProductosPagina();
         } catch (err) {
           estado.importandoProductos = false;
           setMensaje('productos', 'error', mensajeError(err));
@@ -2106,13 +2312,25 @@ maestrosEl.addEventListener('click', async (e) => {
         }
         return;
       }
+      case 'mp-anterior':
+        if (estado.productosPagina > 1) {
+          estado.productosPagina -= 1;
+          await cargarProductosPagina();
+        }
+        return;
+      case 'mp-siguiente':
+        if (estado.productosPagina < estado.productosTotalPaginas) {
+          estado.productosPagina += 1;
+          await cargarProductosPagina();
+        }
+        return;
 
       // Áreas
       case 'crear-area': {
         const nombre = document.getElementById('na-nombre').value;
         await window.api.areas.crear({ nombre });
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
       case 'editar-area':
@@ -2129,20 +2347,20 @@ maestrosEl.addEventListener('click', async (e) => {
         await window.api.areas.editarNombre(Number(id), nombre);
         estado.edicion.area = null;
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
       case 'desactivar-area': {
         if (!window.confirm('¿Desactivar esta área? Podrás reactivarla luego.')) return;
         await window.api.areas.desactivar(Number(id));
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
       case 'reactivar-area': {
         await window.api.areas.reactivar(Number(id));
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
 
@@ -2152,7 +2370,7 @@ maestrosEl.addEventListener('click', async (e) => {
         const nombre = document.getElementById('ne-nombre').value;
         await window.api.encargados.crear({ nombre, areaId });
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
       case 'editar-encargado':
@@ -2169,20 +2387,20 @@ maestrosEl.addEventListener('click', async (e) => {
         await window.api.encargados.editarNombre(Number(id), nombre);
         estado.edicion.encargado = null;
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
       case 'desactivar-encargado': {
         if (!window.confirm('¿Desactivar a este encargado? Podrás reactivarlo luego.')) return;
         await window.api.encargados.desactivar(Number(id));
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
       case 'reactivar-encargado': {
         await window.api.encargados.reactivar(Number(id));
         limpiarMensajes();
-        await refrescarMaestros();
+        await refrescarAreasEncargados();
         return;
       }
       default:

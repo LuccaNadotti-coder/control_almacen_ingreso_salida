@@ -5,7 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { app } = require('electron');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS areas (
@@ -85,6 +85,17 @@ CREATE TABLE IF NOT EXISTS asignaciones (
 CREATE TABLE IF NOT EXISTS meta (clave TEXT PRIMARY KEY, valor TEXT NOT NULL);
 `;
 
+// Índices para que la búsqueda y el orden en Maestros > Productos respondan
+// rápido incluso con ~27.000 filas. Idempotentes: se re-crean en cada arranque
+// sin depender de schema_version.
+const INDICES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_productos_activo ON productos(activo);
+CREATE INDEX IF NOT EXISTS idx_productos_modelo ON productos(modelo);
+CREATE INDEX IF NOT EXISTS idx_productos_color ON productos(color);
+CREATE INDEX IF NOT EXISTS idx_productos_talla ON productos(talla);
+CREATE INDEX IF NOT EXISTS idx_productos_orden ON productos(activo, modelo, color, talla);
+`;
+
 const AREAS_SEMILLA = ['LAVANDERÍA', 'DISEÑO', 'ACABADOS'];
 
 let dbInstance = null;
@@ -112,22 +123,66 @@ function sembrarAreas(db) {
   for (const nombre of AREAS_SEMILLA) stmt.run(nombre);
 }
 
+// Respaldo autocontenido para no depender de respaldo.js (evita el ciclo
+// db.js -> respaldo.js -> db.js -> getDb() reentrante durante la migración).
+function respaldoPreMigracion(db, etiqueta) {
+  const dir = path.join(app.getPath('userData'), 'respaldos');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const f = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const nombre = `sfida-${etiqueta}-${f.getFullYear()}${p(f.getMonth() + 1)}${p(f.getDate())}-${p(f.getHours())}${p(f.getMinutes())}${p(f.getSeconds())}.sqlite`;
+  db.prepare('VACUUM INTO ?').run(path.join(dir, nombre));
+}
+
+// v1 -> v2: el SKU pasa de MODELO|TALLA|COLOR a MODELO|COLOR|TALLA. Solo
+// reescribe productos.sku; no toca boleta_items ni asignaciones (esas
+// referencian producto_id, no el SKU).
+function migrarSkuColorTalla(db) {
+  const productos = db.prepare('SELECT id, modelo, talla, color FROM productos').all();
+  const stmt = db.prepare('UPDATE productos SET sku = ? WHERE id = ?');
+  for (const p of productos) {
+    stmt.run(`${p.modelo}|${p.color}|${p.talla}`, p.id);
+  }
+}
+
 function migrar(db) {
   db.exec('CREATE TABLE IF NOT EXISTS meta (clave TEXT PRIMARY KEY, valor TEXT NOT NULL);');
-  const versionActual = Number(getMeta(db, 'schema_version') || 0);
+  let versionActual = Number(getMeta(db, 'schema_version') || 0);
 
-  if (versionActual < SCHEMA_VERSION) {
+  if (versionActual < 1) {
     db.exec('BEGIN');
     try {
       db.exec(SCHEMA_SQL);
       sembrarAreas(db);
-      setMeta(db, 'schema_version', String(SCHEMA_VERSION));
+      setMeta(db, 'schema_version', '1');
       db.exec('COMMIT');
     } catch (err) {
       db.exec('ROLLBACK');
       throw err;
     }
+    versionActual = 1;
+  } else {
+    // Asegura que tablas/columnas nuevas existan aunque la base ya tenga datos.
+    db.exec(SCHEMA_SQL);
   }
+
+  if (versionActual < 2) {
+    respaldoPreMigracion(db, 'premigracion-v2');
+    db.exec('BEGIN');
+    try {
+      migrarSkuColorTalla(db);
+      setMeta(db, 'schema_version', '2');
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+    versionActual = 2;
+  }
+
+  // Idempotente: no depende de versión, para que bases antiguas también
+  // terminen con los índices sin forzar un bump de schema_version.
+  db.exec(INDICES_SQL);
 }
 
 function getDb() {

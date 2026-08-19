@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   productos: {
     listar: (filtros) => ipcRenderer.invoke('productos:listar', filtros),
+    listarPagina: (filtros) => ipcRenderer.invoke('productos:listarPagina', filtros),
     crear: (datos) => ipcRenderer.invoke('productos:crear', datos),
     editar: (id, datos) => ipcRenderer.invoke('productos:editar', { id, ...datos }),
     importarExcel: () => ipcRenderer.invoke('productos:importarExcel'),
@@ -30,9 +31,11 @@ contextBridge.exposeInMainWorld('api', {
     editar: (id, datos) => ipcRenderer.invoke('boletas:editar', { id, ...datos }),
     anular: (id, motivo) => ipcRenderer.invoke('boletas:anular', { id, motivo }),
     obtenerDetalle: (id) => ipcRenderer.invoke('boletas:obtenerDetalle', { id }),
+    siguienteNumero: () => ipcRenderer.invoke('boletas:siguienteNumero'),
   },
   retornos: {
     listar: () => ipcRenderer.invoke('retornos:listar'),
+    siguienteNumero: () => ipcRenderer.invoke('retornos:siguienteNumero'),
     previsualizar: (datos) => ipcRenderer.invoke('retornos:previsualizar', datos),
     crear: (datos) => ipcRenderer.invoke('retornos:crear', datos),
     pendientesSinUbicar: () => ipcRenderer.invoke('retornos:pendientesSinUbicar'),

@@ -34,8 +34,8 @@ function transaccion(db, fn) {
   }
 }
 
-function calcularSku(modelo, talla, color) {
-  return `${modelo}|${talla}|${color}`;
+function calcularSku(modelo, color, talla) {
+  return `${modelo}|${color}|${talla}`;
 }
 
 function contarBoletasAbiertasPorArea(db, areaId) {
@@ -67,18 +67,49 @@ function listarProductos({ incluirInactivos = false } = {}) {
   const where = incluirInactivos ? '' : 'WHERE activo = 1';
   return db
     .prepare(
-      `SELECT id, modelo, talla, color, sku, activo FROM productos ${where}
-       ORDER BY modelo, talla, color`
+      `SELECT id, modelo, color, talla, sku, activo FROM productos ${where}
+       ORDER BY modelo, color, talla`
     )
     .all();
 }
 
-function buscarProductoDuplicado(db, modelo, talla, color, excluirId) {
-  const claveComparar = `${paraComparar(modelo)}|${paraComparar(talla)}|${paraComparar(color)}`;
-  const productos = db.prepare('SELECT id, modelo, talla, color FROM productos').all();
+// Paginado en servidor para Maestros > Productos (catálogos de ~27.000 filas).
+// El filtro de búsqueda corre en SQL, no en memoria.
+function listarProductosPagina({ pagina = 1, porPagina = 50, busqueda = '', incluirInactivos = false } = {}) {
+  const db = getDb();
+  const condiciones = [];
+  const params = [];
+  if (!incluirInactivos) condiciones.push('activo = 1');
+  const b = normalizarTexto(busqueda);
+  if (b) {
+    condiciones.push('(modelo LIKE ? OR color LIKE ? OR talla LIKE ?)');
+    const comodin = `%${b}%`;
+    params.push(comodin, comodin, comodin);
+  }
+  const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
+
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM productos ${where}`).get(...params).n;
+  const porPaginaNum = Math.max(1, Math.min(200, Number(porPagina) || 50));
+  const totalPaginas = Math.max(1, Math.ceil(total / porPaginaNum));
+  const paginaNum = Math.max(1, Math.min(totalPaginas, Number(pagina) || 1));
+  const offset = (paginaNum - 1) * porPaginaNum;
+
+  const productos = db
+    .prepare(
+      `SELECT id, modelo, color, talla, sku, activo FROM productos ${where}
+       ORDER BY modelo, color, talla LIMIT ? OFFSET ?`
+    )
+    .all(...params, porPaginaNum, offset);
+
+  return { productos, total, pagina: paginaNum, porPagina: porPaginaNum, totalPaginas };
+}
+
+function buscarProductoDuplicado(db, modelo, color, talla, excluirId) {
+  const claveComparar = `${paraComparar(modelo)}|${paraComparar(color)}|${paraComparar(talla)}`;
+  const productos = db.prepare('SELECT id, modelo, color, talla FROM productos').all();
   return productos.find((p) => {
     if (excluirId && p.id === excluirId) return false;
-    return `${paraComparar(p.modelo)}|${paraComparar(p.talla)}|${paraComparar(p.color)}` === claveComparar;
+    return `${paraComparar(p.modelo)}|${paraComparar(p.color)}|${paraComparar(p.talla)}` === claveComparar;
   });
 }
 
@@ -89,17 +120,17 @@ function crearProducto({ modelo, talla, color }) {
   const c = normalizarTexto(color);
 
   if (!m || !t || !c) {
-    throw new Error('Modelo, talla y color son obligatorios.');
+    throw new Error('Modelo, color y talla son obligatorios.');
   }
-  if (buscarProductoDuplicado(db, m, t, c)) {
-    throw new Error(`Ya existe un producto con modelo "${m}", talla "${t}" y color "${c}".`);
+  if (buscarProductoDuplicado(db, m, c, t)) {
+    throw new Error(`Ya existe un producto con modelo "${m}", color "${c}" y talla "${t}".`);
   }
 
-  const sku = calcularSku(m, t, c);
+  const sku = calcularSku(m, c, t);
   const info = db
     .prepare('INSERT INTO productos (modelo, talla, color, sku) VALUES (?, ?, ?, ?)')
     .run(m, t, c, sku);
-  return db.prepare('SELECT id, modelo, talla, color, sku, activo FROM productos WHERE id = ?').get(info.lastInsertRowid);
+  return db.prepare('SELECT id, modelo, color, talla, sku, activo FROM productos WHERE id = ?').get(info.lastInsertRowid);
 }
 
 // Filas crudas: [{ fila, modelo, talla, color }]. Una sola transacción; si algo
@@ -122,7 +153,7 @@ function importarProductos(filasCrudas) {
       });
       return;
     }
-    candidatos.push({ modelo: m, talla: t, color: c, sku: calcularSku(m, t, c) });
+    candidatos.push({ modelo: m, talla: t, color: c, sku: calcularSku(m, c, t) });
   });
 
   return transaccion(db, () => {
@@ -156,15 +187,15 @@ function editarProducto(id, { modelo, talla, color }) {
   const c = normalizarTexto(color);
 
   if (!m || !t || !c) {
-    throw new Error('Modelo, talla y color son obligatorios.');
+    throw new Error('Modelo, color y talla son obligatorios.');
   }
-  if (buscarProductoDuplicado(db, m, t, c, id)) {
-    throw new Error(`Ya existe un producto con modelo "${m}", talla "${t}" y color "${c}".`);
+  if (buscarProductoDuplicado(db, m, c, t, id)) {
+    throw new Error(`Ya existe un producto con modelo "${m}", color "${c}" y talla "${t}".`);
   }
 
-  const sku = calcularSku(m, t, c);
+  const sku = calcularSku(m, c, t);
   db.prepare('UPDATE productos SET modelo = ?, talla = ?, color = ?, sku = ? WHERE id = ?').run(m, t, c, sku, id);
-  return db.prepare('SELECT id, modelo, talla, color, sku, activo FROM productos WHERE id = ?').get(id);
+  return db.prepare('SELECT id, modelo, color, talla, sku, activo FROM productos WHERE id = ?').get(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +365,22 @@ function reactivarEncargado(id) {
 // Boletas de salida
 // ---------------------------------------------------------------------------
 
+// Correlativo por prefijo (SAL-/RET-), calculado leyendo el mayor número
+// existente de ese prefijo en la tabla — nunca con un contador aparte, para
+// que no se desincronice si se anula, edita o restaura un respaldo.
+// `tabla` es siempre un literal interno ('boletas' | 'retornos'), nunca
+// entrada de usuario, así que interpolarlo en el SQL es seguro.
+function siguienteCorrelativo(db, tabla, prefijo) {
+  const filas = db.prepare(`SELECT numero FROM ${tabla} WHERE numero LIKE ?`).all(`${prefijo}-%`);
+  const re = new RegExp(`^${prefijo}-(\\d+)$`);
+  let max = 0;
+  for (const f of filas) {
+    const m = re.exec(f.numero);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return `${prefijo}-${String(max + 1).padStart(4, '0')}`;
+}
+
 function buscarBoletaDuplicada(db, numero, excluirId) {
   const clave = paraComparar(numero);
   const boletas = db.prepare('SELECT id, numero FROM boletas').all();
@@ -399,11 +446,11 @@ function obtenerDetalleBoleta(id) {
   const items = db
     .prepare(
       `SELECT bi.id, bi.producto_id, bi.cantidad_salida, bi.cantidad_devuelta,
-              p.modelo, p.talla, p.color
+              p.modelo, p.color, p.talla
        FROM boleta_items bi
        JOIN productos p ON p.id = bi.producto_id
        WHERE bi.boleta_id = ?
-       ORDER BY p.modelo, p.talla, p.color`
+       ORDER BY p.modelo, p.color, p.talla`
     )
     .all(id)
     .map((it) => ({ ...it, cantidad_falta: it.cantidad_salida - it.cantidad_devuelta }));
@@ -437,7 +484,7 @@ function obtenerDetalleBoleta(id) {
     }
     const r = retornosPorId.get(fila.retorno_id);
     r.aplicado_aqui += fila.cantidad;
-    r.detalle.push({ modelo: fila.modelo, talla: fila.talla, color: fila.color, cantidad: fila.cantidad });
+    r.detalle.push({ modelo: fila.modelo, color: fila.color, talla: fila.talla, cantidad: fila.cantidad });
   }
   const retornos = [...retornosPorId.values()];
 
@@ -500,12 +547,6 @@ function kpisBoletas() {
 
 function crearBoleta({ numero, areaId, encargadoId, fechaSalida, observacion, items }) {
   const db = getDb();
-  const n = normalizarTexto(numero);
-  if (!n) throw new Error('El número de boleta es obligatorio.');
-  if (buscarBoletaDuplicada(db, n)) {
-    throw new Error(`Ya existe una boleta con el número "${n}".`);
-  }
-
   const areaIdNum = Number(areaId);
   if (!Number.isInteger(areaIdNum) || areaIdNum <= 0) throw new Error('Selecciona un área válida.');
   const area = db.prepare('SELECT id FROM areas WHERE id = ? AND activo = 1').get(areaIdNum);
@@ -525,6 +566,12 @@ function crearBoleta({ numero, areaId, encargadoId, fechaSalida, observacion, it
   const obs = observacion == null ? null : String(observacion).trim() || null;
 
   return transaccion(db, () => {
+    let n = normalizarTexto(numero);
+    if (!n) n = siguienteCorrelativo(db, 'boletas', 'SAL');
+    if (buscarBoletaDuplicada(db, n)) {
+      throw new Error(`Ya existe una boleta con el número "${n}".`);
+    }
+
     const info = db
       .prepare(
         `INSERT INTO boletas (numero, area_id, encargado_id, fecha_salida, observacion, creado_en)
@@ -540,6 +587,10 @@ function crearBoleta({ numero, areaId, encargadoId, fechaSalida, observacion, it
   });
 }
 
+function siguienteNumeroBoleta() {
+  return siguienteCorrelativo(getDb(), 'boletas', 'SAL');
+}
+
 function editarBoleta(id, { numero, areaId, encargadoId, fechaSalida, observacion, items }) {
   const db = getDb();
   const boleta = db.prepare('SELECT id, anulada FROM boletas WHERE id = ?').get(id);
@@ -547,12 +598,6 @@ function editarBoleta(id, { numero, areaId, encargadoId, fechaSalida, observacio
   if (boleta.anulada) throw new Error('No se puede editar una boleta anulada.');
   if (contarAsignacionesDeBoleta(db, id) > 0) {
     throw new Error('No se puede editar una boleta que ya tiene devoluciones asignadas. Anúlala si necesitas corregirla.');
-  }
-
-  const n = normalizarTexto(numero);
-  if (!n) throw new Error('El número de boleta es obligatorio.');
-  if (buscarBoletaDuplicada(db, n, id)) {
-    throw new Error(`Ya existe una boleta con el número "${n}".`);
   }
 
   const areaIdNum = Number(areaId);
@@ -574,6 +619,12 @@ function editarBoleta(id, { numero, areaId, encargadoId, fechaSalida, observacio
   const obs = observacion == null ? null : String(observacion).trim() || null;
 
   return transaccion(db, () => {
+    let n = normalizarTexto(numero);
+    if (!n) n = siguienteCorrelativo(db, 'boletas', 'SAL');
+    if (buscarBoletaDuplicada(db, n, id)) {
+      throw new Error(`Ya existe una boleta con el número "${n}".`);
+    }
+
     db.prepare(
       `UPDATE boletas SET numero = ?, area_id = ?, encargado_id = ?, fecha_salida = ?, observacion = ? WHERE id = ?`
     ).run(n, areaIdNum, encargadoIdNum, fecha, obs, id);
@@ -697,7 +748,7 @@ function previsualizarRetorno({ areaId, items, manual }) {
     if (!Number.isInteger(productoId) || productoId <= 0) continue;
     if (!Number.isInteger(cantidadLlega) || cantidadLlega < 0) continue;
 
-    const producto = db.prepare('SELECT id, modelo, talla, color FROM productos WHERE id = ?').get(productoId);
+    const producto = db.prepare('SELECT id, modelo, color, talla FROM productos WHERE id = ?').get(productoId);
     if (!producto) continue;
 
     const pendientes = obtenerPendientesFIFO(db, areaIdNum, productoId);
@@ -716,8 +767,8 @@ function previsualizarRetorno({ areaId, items, manual }) {
     productos.push({
       productoId,
       modelo: producto.modelo,
-      talla: producto.talla,
       color: producto.color,
+      talla: producto.talla,
       cantidadLlega,
       pendienteTotal: pendientes.reduce((s, p) => s + (p.cantidad_salida - p.cantidad_devuelta), 0),
       lineas,
@@ -770,12 +821,12 @@ function obtenerDetalleRetorno(id) {
 
   const items = db
     .prepare(
-      `SELECT ri.id, ri.producto_id, ri.cantidad_total, p.modelo, p.talla, p.color,
+      `SELECT ri.id, ri.producto_id, ri.cantidad_total, p.modelo, p.color, p.talla,
               COALESCE((SELECT SUM(cantidad) FROM asignaciones WHERE retorno_item_id = ri.id), 0) AS asignado
        FROM retorno_items ri
        JOIN productos p ON p.id = ri.producto_id
        WHERE ri.retorno_id = ?
-       ORDER BY p.modelo, p.talla, p.color`
+       ORDER BY p.modelo, p.color, p.talla`
     )
     .all(id)
     .map((it) => ({ ...it, sin_ubicar: it.cantidad_total - it.asignado }));
@@ -785,12 +836,6 @@ function obtenerDetalleRetorno(id) {
 
 function crearRetorno({ numero, areaId, encargadoId, fecha, observacion, items, manual }) {
   const db = getDb();
-  const n = normalizarTexto(numero);
-  if (!n) throw new Error('El número de retorno es obligatorio.');
-  if (buscarRetornoDuplicado(db, n)) {
-    throw new Error(`Ya existe un retorno con el número "${n}".`);
-  }
-
   const areaIdNum = Number(areaId);
   if (!Number.isInteger(areaIdNum) || areaIdNum <= 0) throw new Error('Selecciona un área válida.');
   const area = db.prepare('SELECT id FROM areas WHERE id = ? AND activo = 1').get(areaIdNum);
@@ -828,6 +873,12 @@ function crearRetorno({ numero, areaId, encargadoId, fecha, observacion, items, 
   const manualSeguro = manual && typeof manual === 'object' ? manual : {};
 
   return transaccion(db, () => {
+    let n = normalizarTexto(numero);
+    if (!n) n = siguienteCorrelativo(db, 'retornos', 'RET');
+    if (buscarRetornoDuplicado(db, n)) {
+      throw new Error(`Ya existe un retorno con el número "${n}".`);
+    }
+
     const infoRetorno = db
       .prepare(
         `INSERT INTO retornos (numero, area_id, encargado_id, fecha, observacion, creado_en)
@@ -865,6 +916,10 @@ function crearRetorno({ numero, areaId, encargadoId, fecha, observacion, items, 
 
     return obtenerDetalleRetorno(retornoId);
   });
+}
+
+function siguienteNumeroRetorno() {
+  return siguienteCorrelativo(getDb(), 'retornos', 'RET');
 }
 
 function listarRetornos() {
@@ -912,7 +967,7 @@ function listarPendientesSinUbicar() {
     .prepare(
       `SELECT ri.id AS retorno_item_id, r.id AS retorno_id, r.numero AS retorno_numero, r.fecha,
               r.area_id, a.nombre AS area_nombre,
-              ri.producto_id, p.modelo, p.talla, p.color, ri.cantidad_total,
+              ri.producto_id, p.modelo, p.color, p.talla, ri.cantidad_total,
               COALESCE((SELECT SUM(cantidad) FROM asignaciones WHERE retorno_item_id = ri.id), 0) AS asignado
        FROM retorno_items ri
        JOIN retornos r ON r.id = ri.retorno_id
@@ -1037,7 +1092,7 @@ function listarPendientes(filtros = {}) {
       `SELECT b.id AS boleta_id, b.numero, b.fecha_salida,
               a.id AS area_id, a.nombre AS area_nombre,
               e.id AS encargado_id, e.nombre AS encargado_nombre,
-              p.modelo, p.talla, p.color,
+              p.modelo, p.color, p.talla,
               bi.cantidad_salida, bi.cantidad_devuelta
        FROM boleta_items bi
        JOIN boletas b ON b.id = bi.boleta_id
@@ -1045,7 +1100,7 @@ function listarPendientes(filtros = {}) {
        JOIN encargados e ON e.id = b.encargado_id
        JOIN productos p ON p.id = bi.producto_id
        WHERE ${where}
-       ORDER BY b.fecha_salida ASC, b.id ASC, p.modelo, p.talla, p.color`
+       ORDER BY b.fecha_salida ASC, b.id ASC, p.modelo, p.color, p.talla`
     )
     .all(...params)
     .map((row) => ({
@@ -1106,7 +1161,7 @@ function verificarIntegridad() {
     .prepare(
       `SELECT bi.id AS boleta_item_id, bi.boleta_id, b.numero, bi.cantidad_devuelta,
               COALESCE((SELECT SUM(cantidad) FROM asignaciones WHERE boleta_item_id = bi.id), 0) AS suma_asignaciones,
-              p.modelo, p.talla, p.color
+              p.modelo, p.color, p.talla
        FROM boleta_items bi
        JOIN boletas b ON b.id = bi.boleta_id
        JOIN productos p ON p.id = bi.producto_id`
@@ -1120,8 +1175,8 @@ function verificarIntegridad() {
       boletaId: f.boleta_id,
       numero: f.numero,
       modelo: f.modelo,
-      talla: f.talla,
       color: f.color,
+      talla: f.talla,
       cantidadDevuelta: f.cantidad_devuelta,
       sumaAsignaciones: f.suma_asignaciones,
       diferencia: f.cantidad_devuelta - f.suma_asignaciones,
@@ -1161,6 +1216,7 @@ module.exports = {
   transaccion,
   productos: {
     listar: listarProductos,
+    listarPagina: listarProductosPagina,
     crear: crearProducto,
     editar: editarProducto,
     importar: importarProductos,
@@ -1172,6 +1228,7 @@ module.exports = {
     editar: editarBoleta,
     anular: anularBoleta,
     obtenerDetalle: obtenerDetalleBoleta,
+    siguienteNumero: siguienteNumeroBoleta,
   },
   retornos: {
     listar: listarRetornos,
@@ -1180,6 +1237,7 @@ module.exports = {
     pendientesSinUbicar: listarPendientesSinUbicar,
     pendientesPorProducto,
     asignarSinUbicar,
+    siguienteNumero: siguienteNumeroRetorno,
   },
   pendientes: {
     listar: listarPendientes,

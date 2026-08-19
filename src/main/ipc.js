@@ -8,6 +8,7 @@ const respaldo = require('./respaldo');
 
 function registrarHandlers() {
   ipcMain.handle('productos:listar', (_e, filtros) => repo.productos.listar(filtros));
+  ipcMain.handle('productos:listarPagina', (_e, filtros) => repo.productos.listarPagina(filtros));
   ipcMain.handle('productos:crear', (_e, datos) => repo.productos.crear(datos));
   ipcMain.handle('productos:editar', (_e, { id, ...datos }) => repo.productos.editar(id, datos));
   ipcMain.handle('productos:importarExcel', () => importarProductosDesdeExcel());
@@ -30,8 +31,10 @@ function registrarHandlers() {
   ipcMain.handle('boletas:editar', (_e, { id, ...datos }) => repo.boletas.editar(id, datos));
   ipcMain.handle('boletas:anular', (_e, { id, motivo }) => repo.boletas.anular(id, motivo));
   ipcMain.handle('boletas:obtenerDetalle', (_e, { id }) => repo.boletas.obtenerDetalle(id));
+  ipcMain.handle('boletas:siguienteNumero', () => repo.boletas.siguienteNumero());
 
   ipcMain.handle('retornos:listar', () => repo.retornos.listar());
+  ipcMain.handle('retornos:siguienteNumero', () => repo.retornos.siguienteNumero());
   ipcMain.handle('retornos:previsualizar', (_e, datos) => repo.retornos.previsualizar(datos));
   ipcMain.handle('retornos:crear', (_e, datos) => repo.retornos.crear(datos));
   ipcMain.handle('retornos:pendientesSinUbicar', () => repo.retornos.pendientesSinUbicar());
