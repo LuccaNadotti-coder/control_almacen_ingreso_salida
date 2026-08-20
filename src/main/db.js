@@ -5,7 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { app } = require('electron');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS areas (
@@ -145,9 +145,59 @@ function migrarSkuColorTalla(db) {
   }
 }
 
+// v2 -> v3: numeración de boletas/retornos siempre a 6 dígitos (SAL-001454,
+// RET-000007). Calcula el número final que le tocaría a cada registro:
+//  - Ya tiene prefijo pero con menos de 6 dígitos: se rellena con ceros.
+//  - Son solo dígitos sin prefijo (numeración vieja): se le antepone el
+//    prefijo de su tabla y se rellena a 6 dígitos.
+//  - Cualquier otro texto libre (numeración antigua no numérica) no se toca.
+function calcularNuevoNumero(numero, prefijo) {
+  const n = String(numero ?? '').trim();
+  const conPrefijo = new RegExp(`^${prefijo}-(\\d+)$`).exec(n);
+  if (conPrefijo) {
+    if (conPrefijo[1].length >= 6) return null;
+    return `${prefijo}-${conPrefijo[1].padStart(6, '0')}`;
+  }
+  if (/^\d+$/.test(n)) {
+    return `${prefijo}-${n.padStart(6, '0')}`;
+  }
+  return null;
+}
+
+// Agrupa por número final (el nuevo si cambia, o el actual si no cambia) para
+// detectar si dos registros distintos terminarían con el mismo número.
+function planificarCambiosNumeracion(db, tabla, prefijo) {
+  const filas = db.prepare(`SELECT id, numero FROM ${tabla}`).all();
+  const porNumeroFinal = new Map();
+  const cambios = [];
+  for (const fila of filas) {
+    const nuevo = calcularNuevoNumero(fila.numero, prefijo);
+    const final = nuevo || fila.numero;
+    if (!porNumeroFinal.has(final)) porNumeroFinal.set(final, []);
+    porNumeroFinal.get(final).push({ id: fila.id, numeroOriginal: fila.numero });
+    if (nuevo) cambios.push({ id: fila.id, numeroOriginal: fila.numero, numeroNuevo: nuevo });
+  }
+  const colisiones = [];
+  for (const [numeroFinal, registros] of porNumeroFinal) {
+    if (registros.length > 1) colisiones.push({ tabla, numeroFinal, registros });
+  }
+  return { cambios, colisiones };
+}
+
+function planificarMigracionNumeracion(db) {
+  const boletas = planificarCambiosNumeracion(db, 'boletas', 'SAL');
+  const retornos = planificarCambiosNumeracion(db, 'retornos', 'RET');
+  return {
+    cambiosBoletas: boletas.cambios,
+    cambiosRetornos: retornos.cambios,
+    colisiones: [...boletas.colisiones, ...retornos.colisiones],
+  };
+}
+
 function migrar(db) {
   db.exec('CREATE TABLE IF NOT EXISTS meta (clave TEXT PRIMARY KEY, valor TEXT NOT NULL);');
   let versionActual = Number(getMeta(db, 'schema_version') || 0);
+  let colisionesNumeracion = [];
 
   if (versionActual < 1) {
     db.exec('BEGIN');
@@ -180,10 +230,38 @@ function migrar(db) {
     versionActual = 2;
   }
 
+  if (versionActual < 3) {
+    const plan = planificarMigracionNumeracion(db);
+    if (plan.colisiones.length > 0) {
+      // No se toca nada: se deja schema_version en 2 para reintentar en el
+      // próximo arranque, una vez que el usuario corrija los números a mano.
+      colisionesNumeracion = plan.colisiones;
+    } else {
+      respaldoPreMigracion(db, 'premigracion-v3');
+      db.exec('BEGIN');
+      try {
+        const stmtBoletas = db.prepare('UPDATE boletas SET numero = ? WHERE id = ?');
+        for (const c of plan.cambiosBoletas) stmtBoletas.run(c.numeroNuevo, c.id);
+        const stmtRetornos = db.prepare('UPDATE retornos SET numero = ? WHERE id = ?');
+        for (const c of plan.cambiosRetornos) stmtRetornos.run(c.numeroNuevo, c.id);
+        setMeta(db, 'schema_version', '3');
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+      versionActual = 3;
+    }
+  }
+
   // Idempotente: no depende de versión, para que bases antiguas también
   // terminen con los índices sin forzar un bump de schema_version.
   db.exec(INDICES_SQL);
+
+  return { colisionesNumeracion };
 }
+
+let colisionesNumeracionPendiente = [];
 
 function getDb() {
   if (dbInstance) return dbInstance;
@@ -191,10 +269,15 @@ function getDb() {
   const db = new DatabaseSync(getDbPath());
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
-  migrar(db);
+  const { colisionesNumeracion } = migrar(db);
+  colisionesNumeracionPendiente = colisionesNumeracion;
 
   dbInstance = db;
   return dbInstance;
+}
+
+function getColisionesNumeracionPendiente() {
+  return colisionesNumeracionPendiente;
 }
 
 function cerrarDb() {
@@ -204,4 +287,4 @@ function cerrarDb() {
   }
 }
 
-module.exports = { getDb, getDbPath, cerrarDb };
+module.exports = { getDb, getDbPath, cerrarDb, getColisionesNumeracionPendiente };

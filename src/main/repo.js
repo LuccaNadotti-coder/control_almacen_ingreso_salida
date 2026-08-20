@@ -378,7 +378,21 @@ function siguienteCorrelativo(db, tabla, prefijo) {
     const m = re.exec(f.numero);
     if (m) max = Math.max(max, parseInt(m[1], 10));
   }
-  return `${prefijo}-${String(max + 1).padStart(4, '0')}`;
+  return `${prefijo}-${String(max + 1).padStart(6, '0')}`;
+}
+
+// El número siempre queda a 6 dígitos: PREFIJO-XXXXXX. Si llega solo con
+// dígitos (con o sin prefijo) y menos de 6 cifras, se rellena con ceros a la
+// izquierda. Si es texto libre no numérico (numeración antigua sin patrón),
+// se deja tal cual. El relleno se hace aquí, en el main, sin confiar en que
+// la UI ya lo haya hecho.
+function normalizarNumeroDocumento(numero, prefijo) {
+  const n = normalizarTexto(numero);
+  if (!n) return '';
+  const conPrefijo = new RegExp(`^${prefijo}-(\\d+)$`).exec(n);
+  if (conPrefijo) return `${prefijo}-${conPrefijo[1].padStart(6, '0')}`;
+  if (/^\d+$/.test(n)) return `${prefijo}-${n.padStart(6, '0')}`;
+  return n;
 }
 
 function buscarBoletaDuplicada(db, numero, excluirId) {
@@ -566,7 +580,7 @@ function crearBoleta({ numero, areaId, encargadoId, fechaSalida, observacion, it
   const obs = observacion == null ? null : String(observacion).trim() || null;
 
   return transaccion(db, () => {
-    let n = normalizarTexto(numero);
+    let n = normalizarNumeroDocumento(numero, 'SAL');
     if (!n) n = siguienteCorrelativo(db, 'boletas', 'SAL');
     if (buscarBoletaDuplicada(db, n)) {
       throw new Error(`Ya existe una boleta con el número "${n}".`);
@@ -619,7 +633,7 @@ function editarBoleta(id, { numero, areaId, encargadoId, fechaSalida, observacio
   const obs = observacion == null ? null : String(observacion).trim() || null;
 
   return transaccion(db, () => {
-    let n = normalizarTexto(numero);
+    let n = normalizarNumeroDocumento(numero, 'SAL');
     if (!n) n = siguienteCorrelativo(db, 'boletas', 'SAL');
     if (buscarBoletaDuplicada(db, n, id)) {
       throw new Error(`Ya existe una boleta con el número "${n}".`);
@@ -873,7 +887,7 @@ function crearRetorno({ numero, areaId, encargadoId, fecha, observacion, items, 
   const manualSeguro = manual && typeof manual === 'object' ? manual : {};
 
   return transaccion(db, () => {
-    let n = normalizarTexto(numero);
+    let n = normalizarNumeroDocumento(numero, 'RET');
     if (!n) n = siguienteCorrelativo(db, 'retornos', 'RET');
     if (buscarRetornoDuplicado(db, n)) {
       throw new Error(`Ya existe un retorno con el número "${n}".`);

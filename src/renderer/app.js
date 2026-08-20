@@ -34,7 +34,7 @@ function vincularMayusculasEn(contenedor) {
 }
 
 // ---------------------------------------------------------------------------
-// Prefijo fijo del número de boleta/retorno (SAL-0007 / RET-0007)
+// Prefijo fijo del número de boleta/retorno (SAL-000007 / RET-000007)
 // ---------------------------------------------------------------------------
 
 const PREFIJO_SALIDA = 'SAL-';
@@ -52,11 +52,13 @@ function soloDigitos(s) {
 }
 
 // Deja pasar solo dígitos en un input mientras se escribe, preservando la
-// posición del cursor (igual criterio que vincularMayusculas).
-function filtrarSoloDigitos(input) {
+// posición del cursor (igual criterio que vincularMayusculas). Si se pasa
+// maxLen, además recorta el valor a esa cantidad de dígitos.
+function filtrarSoloDigitos(input, maxLen) {
   const inicio = input.selectionStart;
   const antes = input.value;
-  const limpio = soloDigitos(antes);
+  let limpio = soloDigitos(antes);
+  if (maxLen) limpio = limpio.slice(0, maxLen);
   if (limpio === antes) return;
   input.value = limpio;
   const pos = Math.max(0, inicio - (antes.length - limpio.length));
@@ -151,23 +153,31 @@ function partirTextoProducto(texto) {
 // Devuelve solo los items (sin el div contenedor .sugerencias): el llamador
 // decide dónde montarlos (ver mostrarPortalSugerencias, que los monta en un
 // portal fuera del flujo para que ningún ancestro con overflow los recorte).
-function itemsSugerenciasProducto(productos, texto, prefijo) {
+// indiceActivo marca el ítem resaltado por teclado (-1 = ninguno).
+function itemsSugerenciasProducto(productos, texto, prefijo, indiceActivo = -1) {
   const textoLimpio = String(texto ?? '').trim();
   if (textoLimpio.length < 2) return '';
   const sugerencias = buscarSugerenciasProducto(productos, textoLimpio);
   const itemsProductos = sugerencias
     .map(
-      (p) => `
-      <div class="sug-item" data-accion="elegir-producto-${prefijo}" data-id="${p.id}">
+      (p, i) => `
+      <div class="sug-item${i === indiceActivo ? ' sug-activo' : ''}" data-accion="elegir-producto-${prefijo}" data-id="${p.id}" data-index="${i}">
         <b>${escapeHtml(p.modelo)}</b> <span>${escapeHtml(p.color)} · ${escapeHtml(p.talla)}</span>
       </div>`
     )
     .join('');
+  const indiceCrear = sugerencias.length;
   const itemCrear = `
-    <div class="sug-item sug-crear" data-accion="crear-producto-nuevo-${prefijo}" data-texto="${escapeHtml(textoLimpio)}">
+    <div class="sug-item sug-crear${indiceCrear === indiceActivo ? ' sug-activo' : ''}" data-accion="crear-producto-nuevo-${prefijo}" data-texto="${escapeHtml(textoLimpio)}" data-index="${indiceCrear}">
       + Crear producto nuevo: "${escapeHtml(textoLimpio)}"
     </div>`;
   return `${itemsProductos}${itemCrear}`;
+}
+
+function totalSugerencias(productos, texto) {
+  const textoLimpio = String(texto ?? '').trim();
+  if (textoLimpio.length < 2) return 0;
+  return buscarSugerenciasProducto(productos, textoLimpio).length + 1; // +1 = "crear producto nuevo"
 }
 
 // ---------------------------------------------------------------------------
@@ -178,9 +188,16 @@ function itemsSugerenciasProducto(productos, texto, prefijo) {
 
 const elPortalSugerencias = document.getElementById('sugerencias-portal');
 
+// Estado del portal abierto (qué input lo pidió, con qué datos y qué ítem
+// está resaltado por teclado), para poder repintarlo en cada ArrowUp/Down
+// sin depender de que el llamador vuelva a pasar los mismos argumentos.
+const estadoPortal = { input: null, productos: [], texto: '', prefijo: '', indice: -1 };
+
 function ocultarPortalSugerencias() {
   elPortalSugerencias.style.display = 'none';
   elPortalSugerencias.innerHTML = '';
+  estadoPortal.input = null;
+  estadoPortal.indice = -1;
 }
 
 function posicionarPortalSugerencias(input) {
@@ -190,22 +207,69 @@ function posicionarPortalSugerencias(input) {
   elPortalSugerencias.style.width = `${r.width}px`;
 }
 
-function mostrarPortalSugerencias(input, productos, texto, prefijo) {
-  const html = itemsSugerenciasProducto(productos, texto, prefijo);
+function repintarPortalSugerencias() {
+  const html = itemsSugerenciasProducto(estadoPortal.productos, estadoPortal.texto, estadoPortal.prefijo, estadoPortal.indice);
   if (!html) {
     ocultarPortalSugerencias();
     return;
   }
   elPortalSugerencias.innerHTML = html;
   elPortalSugerencias.style.display = 'block';
-  posicionarPortalSugerencias(input);
+  posicionarPortalSugerencias(estadoPortal.input);
 }
 
-window.addEventListener('scroll', ocultarPortalSugerencias, true);
+function mostrarPortalSugerencias(input, productos, texto, prefijo) {
+  estadoPortal.input = input;
+  estadoPortal.productos = productos;
+  estadoPortal.texto = texto;
+  estadoPortal.prefijo = prefijo;
+  estadoPortal.indice = -1;
+  repintarPortalSugerencias();
+}
+
+// Navega el resaltado con flechas arriba/abajo (con wraparound) y hace
+// scroll para mantener el ítem activo visible dentro de la lista.
+function moverIndiceSugerencias(delta) {
+  if (elPortalSugerencias.style.display === 'none') return false;
+  const total = totalSugerencias(estadoPortal.productos, estadoPortal.texto);
+  if (total === 0) return false;
+  let nuevo = estadoPortal.indice + delta;
+  if (nuevo < 0) nuevo = total - 1;
+  if (nuevo >= total) nuevo = 0;
+  estadoPortal.indice = nuevo;
+  repintarPortalSugerencias();
+  elPortalSugerencias.querySelector('.sug-activo')?.scrollIntoView({ block: 'nearest' });
+  return true;
+}
+
+// Confirma con Enter el ítem resaltado por teclado, reutilizando el mismo
+// manejador de click del portal (elegir producto / crear producto nuevo).
+function activarSeleccionPortal() {
+  if (estadoPortal.indice < 0) return false;
+  const el = elPortalSugerencias.querySelector(`[data-index="${estadoPortal.indice}"]`);
+  if (!el) return false;
+  el.click();
+  return true;
+}
+
+// Solo el scroll de la propia página cierra el portal; el scroll ocurrido
+// dentro de él (rueda del mouse o arrastre de su barra) no debe cerrarlo.
+// El listener está en capture porque 'scroll' no burbujea, pero sí se
+// dispara en fase de captura para elementos con overflow anidados.
+window.addEventListener(
+  'scroll',
+  (e) => {
+    if (elPortalSugerencias.contains(e.target)) return;
+    ocultarPortalSugerencias();
+  },
+  true
+);
 window.addEventListener('resize', ocultarPortalSugerencias);
 
+// mousedown en cualquier parte del portal (ítems o su barra de scroll) no
+// debe quitarle el foco al input de búsqueda.
 elPortalSugerencias.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.sug-item')) e.preventDefault();
+  e.preventDefault();
 });
 
 // Los data-accion de "elegir"/"crear producto" quedan en el portal, no en las
@@ -514,7 +578,7 @@ function pintarNueva() {
     ? `<div class="error" style="margin:12px 18px 0">Esta área no tiene encargados activos. Regístralos en Maestros antes de continuar.</div>`
     : '';
   const campoNumero = estadoNueva.numeroModo === 'prefijo'
-    ? `<div class="input-prefijo"><span class="prefijo-fijo">${PREFIJO_SALIDA}</span><input inputmode="numeric" autocomplete="off" id="ns-numero" placeholder="0007" value="${escapeHtml(estadoNueva.numero)}"></div>`
+    ? `<div class="input-prefijo"><span class="prefijo-fijo">${PREFIJO_SALIDA}</span><input inputmode="numeric" autocomplete="off" maxlength="6" id="ns-numero" placeholder="000007" value="${escapeHtml(estadoNueva.numero)}"></div>`
     : `<input data-mayus id="ns-numero" value="${escapeHtml(estadoNueva.numero)}">`;
 
   sec.innerHTML = `
@@ -588,7 +652,7 @@ nuevaEl.addEventListener('change', async (e) => {
 
 nuevaEl.addEventListener('input', (e) => {
   if (e.target.id === 'ns-numero' && estadoNueva.numeroModo === 'prefijo') {
-    filtrarSoloDigitos(e.target);
+    filtrarSoloDigitos(e.target, 6);
     return;
   }
   if (e.target.id === 'ns-buscar') {
@@ -601,6 +665,19 @@ nuevaEl.addEventListener('input', (e) => {
 nuevaEl.addEventListener('focusin', (e) => {
   if (e.target.id === 'ns-buscar') {
     mostrarPortalSugerencias(e.target, estadoNueva.productosDisponibles, estadoNueva.busqueda, 'ns');
+  }
+});
+
+nuevaEl.addEventListener('keydown', (e) => {
+  if (e.target.id !== 'ns-buscar') return;
+  if (e.key === 'ArrowDown') {
+    if (moverIndiceSugerencias(1)) e.preventDefault();
+  } else if (e.key === 'ArrowUp') {
+    if (moverIndiceSugerencias(-1)) e.preventDefault();
+  } else if (e.key === 'Enter') {
+    if (activarSeleccionPortal()) e.preventDefault();
+  } else if (e.key === 'Escape') {
+    ocultarPortalSugerencias();
   }
 });
 
@@ -702,7 +779,7 @@ nuevaEl.addEventListener('click', async (e) => {
     try {
       const digitos = estadoNueva.numero.trim();
       const numeroFinal = estadoNueva.numeroModo === 'prefijo'
-        ? (digitos ? `${PREFIJO_SALIDA}${digitos.padStart(4, '0')}` : '')
+        ? (digitos ? `${PREFIJO_SALIDA}${digitos.padStart(6, '0')}` : '')
         : estadoNueva.numero;
       const payload = {
         numero: numeroFinal,
@@ -1065,7 +1142,7 @@ function pintarDevolucion() {
       <h3>Boleta de retorno</h3>
       <div class="pad">
         <div class="grid4">
-          <div><label>N° de retorno</label><div class="input-prefijo"><span class="prefijo-fijo">${PREFIJO_RETORNO}</span><input inputmode="numeric" autocomplete="off" id="dv-numero" placeholder="0007" value="${escapeHtml(estadoDevolucion.numero)}"></div></div>
+          <div><label>N° de retorno</label><div class="input-prefijo"><span class="prefijo-fijo">${PREFIJO_RETORNO}</span><input inputmode="numeric" autocomplete="off" maxlength="6" id="dv-numero" placeholder="000007" value="${escapeHtml(estadoDevolucion.numero)}"></div></div>
           <div><label>Área</label><select id="dv-area"><option value="">Selecciona…</option>${opcionesArea}</select></div>
           <div><label>Fecha</label><input type="date" id="dv-fecha" value="${escapeHtml(estadoDevolucion.fecha)}"></div>
           <div><label>Entrega</label>
@@ -1159,7 +1236,7 @@ devolverEl.addEventListener('change', async (e) => {
 
 devolverEl.addEventListener('input', (e) => {
   if (e.target.id === 'dv-numero') {
-    filtrarSoloDigitos(e.target);
+    filtrarSoloDigitos(e.target, 6);
     return;
   }
   if (e.target.id === 'dv-buscar') {
@@ -1172,6 +1249,19 @@ devolverEl.addEventListener('input', (e) => {
 devolverEl.addEventListener('focusin', (e) => {
   if (e.target.id === 'dv-buscar') {
     mostrarPortalSugerencias(e.target, estadoDevolucion.productosDisponibles, estadoDevolucion.busqueda, 'dv');
+  }
+});
+
+devolverEl.addEventListener('keydown', (e) => {
+  if (e.target.id !== 'dv-buscar') return;
+  if (e.key === 'ArrowDown') {
+    if (moverIndiceSugerencias(1)) e.preventDefault();
+  } else if (e.key === 'ArrowUp') {
+    if (moverIndiceSugerencias(-1)) e.preventDefault();
+  } else if (e.key === 'Enter') {
+    if (activarSeleccionPortal()) e.preventDefault();
+  } else if (e.key === 'Escape') {
+    ocultarPortalSugerencias();
   }
 });
 
@@ -1275,7 +1365,7 @@ devolverEl.addEventListener('click', async (e) => {
     estadoDevolucion.mensaje = null;
     try {
       const digitosRet = estadoDevolucion.numero.trim();
-      const numeroFinalRet = digitosRet ? `${PREFIJO_RETORNO}${digitosRet.padStart(4, '0')}` : '';
+      const numeroFinalRet = digitosRet ? `${PREFIJO_RETORNO}${digitosRet.padStart(6, '0')}` : '';
       await window.api.retornos.crear({
         numero: numeroFinalRet,
         areaId: Number(estadoDevolucion.areaId),

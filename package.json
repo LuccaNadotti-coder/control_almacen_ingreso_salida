@@ -1,6 +1,6 @@
 {
   "name": "sfida-almacen",
-  "productName": "SFIDA Almacén",
+  "productName": "SFIDA Ingreso y Salida",
   "version": "1.0.0",
   "description": "Control de salidas y devoluciones de almacén",
   "main": "src/main/main.js",
@@ -24,7 +24,7 @@
   },
   "build": {
     "appId": "com.sfida.almacen",
-    "productName": "SFIDA Almacén",
+    "productName": "SFIDA Ingreso y Salida",
     "icon": "build/icon.ico",
     "files": [
       "src/**/*",

@@ -293,6 +293,7 @@ input.qty { width: 72px; text-align: right; font-variant-numeric: tabular-nums; 
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-md);
   max-height: 260px; overflow-y: auto;
+  overscroll-behavior: contain;
   box-shadow: var(--shadow-float);
   transform-origin: top;
   opacity: 1;
@@ -316,6 +317,7 @@ input.qty { width: 72px; text-align: right; font-variant-numeric: tabular-nums; 
 .sug-item:last-child { border-bottom: 0; }
 .sug-item:hover { background: var(--wine-wash); }
 .sug-item:active { background: var(--wine-wash); }
+.sug-item.sug-activo { background: var(--wine-wash); }
 .sug-item b { margin-right: 6px; }
 .sug-item span { color: var(--text-2); font-size: var(--fs-xs); }
 .sug-crear { color: #6FC98C; font-weight: 500; }
