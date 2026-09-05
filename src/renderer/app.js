@@ -254,12 +254,18 @@ function activarSeleccionPortal() {
 
 // Solo el scroll de la propia página cierra el portal; el scroll ocurrido
 // dentro de él (rueda del mouse o arrastre de su barra) no debe cerrarlo.
+// Tampoco lo cierra el desplazamiento horizontal DENTRO del propio input de
+// búsqueda: al escribir más letras de las que caben en el renglón, el campo
+// hace scroll de su texto y dispara 'scroll'; eso no es scroll de la página y
+// no debe apagar las sugerencias (el portal sigue anclado al mismo input).
 // El listener está en capture porque 'scroll' no burbujea, pero sí se
 // dispara en fase de captura para elementos con overflow anidados.
 window.addEventListener(
   'scroll',
   (e) => {
     if (elPortalSugerencias.contains(e.target)) return;
+    if (e.target === estadoPortal.input) return;
+    if (e.target instanceof Element && e.target.matches('input, textarea')) return;
     ocultarPortalSugerencias();
   },
   true
