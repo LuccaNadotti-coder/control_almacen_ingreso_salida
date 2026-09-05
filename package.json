@@ -1,7 +1,7 @@
 {
   "name": "sfida-almacen",
   "productName": "SFIDA Ingreso y Salida",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Control de salidas y devoluciones de almacén",
   "main": "src/main/main.js",
   "private": true,
@@ -23,7 +23,7 @@
     "xlsx": "^0.18.5"
   },
   "build": {
-    "appId": "com.sfida.almacen",
+    "appId": "com.sfida.controlalmacen.ingresosalida",
     "productName": "SFIDA Ingreso y Salida",
     "icon": "build/icon.ico",
     "files": [
@@ -49,8 +49,11 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "guid": "64d8407c-5d0d-5ab3-aad8-dd0bd2de5417",
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
+      "shortcutName": "SFIDA Ingreso y Salida",
+      "uninstallDisplayName": "SFIDA Ingreso y Salida ${version}",
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "portable": {
