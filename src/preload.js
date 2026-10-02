@@ -51,6 +51,18 @@ contextBridge.exposeInMainWorld('api', {
     verificar: () => ipcRenderer.invoke('integridad:verificar'),
     recalcular: () => ipcRenderer.invoke('integridad:recalcular'),
   },
+  impresion: {
+    impresoras: () => ipcRenderer.invoke('impresion:impresoras'),
+    preferencias: () => ipcRenderer.invoke('impresion:preferencias'),
+    vistaPrevia: (id, anchoMm, corrimientoMm) =>
+      ipcRenderer.invoke('impresion:vistaPrevia', { id, anchoMm, corrimientoMm }),
+    imprimir: (opciones) => ipcRenderer.invoke('impresion:imprimir', opciones),
+    guardarPdf: (id, anchoMm) => ipcRenderer.invoke('impresion:guardarPdf', { id, anchoMm }),
+  },
+  empresa: {
+    obtener: () => ipcRenderer.invoke('empresa:obtener'),
+    guardar: (datos) => ipcRenderer.invoke('empresa:guardar', datos),
+  },
   respaldo: {
     crearAhora: () => ipcRenderer.invoke('respaldo:crearAhora'),
     info: () => ipcRenderer.invoke('respaldo:info'),

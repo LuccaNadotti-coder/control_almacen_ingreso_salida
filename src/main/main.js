@@ -52,6 +52,7 @@ app.setPath('userData', RUTA_DATOS);
 const { getDb, getColisionesNumeracionPendiente } = require('./db');
 const { registrarHandlers } = require('./ipc');
 const { crearRespaldo } = require('./respaldo');
+const { hayBoletasAbiertas } = require('./impresion/imprimir');
 
 let ventanaPrincipal = null;
 
@@ -104,7 +105,11 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('No se pudo crear el respaldo automático de arranque:', err);
   }
-  registrarHandlers();
+  // La ventana se resuelve tarde: los handlers se registran antes de crearla, y
+  // la impresión necesita una ventana viva para preguntar por las impresoras.
+  registrarHandlers({
+    ventana: () => (ventanaPrincipal && !ventanaPrincipal.isDestroyed() ? ventanaPrincipal : null),
+  });
   crearVentana();
 
   app.on('activate', () => {
@@ -113,5 +118,12 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  // TRAMPA 6: la boleta se arma en una ventana oculta aparte. Si esa ventana
+  // queda como la única viva —por ejemplo, al cerrar la ventana principal
+  // mientras se genera el PDF—, cerrar la app acá mataría el proceso a medio
+  // armar y el siguiente `loadFile` fallaría con ERR_FAILED (-2). Al destruirse
+  // la ventana oculta este evento vuelve a dispararse con el contador ya en
+  // cero, y entonces sí se cierra.
+  if (hayBoletasAbiertas()) return;
   if (process.platform !== 'darwin') app.quit();
 });

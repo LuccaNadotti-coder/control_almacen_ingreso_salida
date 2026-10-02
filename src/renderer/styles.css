@@ -343,6 +343,107 @@ input.qty { width: 72px; text-align: right; font-variant-numeric: tabular-nums; 
 
 .vacio { padding: 40px 18px; text-align: center; color: var(--text-2); font-size: var(--fs-sm); }
 
+/* ---------------------------------------------------------------- modales */
+.modal-fondo {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 6, 9, .64);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  opacity: 1;
+  transition: opacity 140ms var(--ease);
+}
+.modal-fondo { @starting-style { opacity: 0; } }
+.modal {
+  width: min(980px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  transform: scale(1);
+  transition: transform 160ms var(--ease);
+}
+.modal { @starting-style { transform: scale(0.97); } }
+.modal-cab {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+.modal-cab h3 { font-size: var(--fs-lg); font-weight: 600; letter-spacing: -.01em; }
+.modal-cab span { font-size: var(--fs-xs); color: var(--text-2); }
+.modal-cuerpo { padding: 20px; overflow-y: auto; }
+.modal-pie {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+.modal-pie .crece { flex: 1; }
+.grid-imp { display: grid; grid-template-columns: 290px 1fr; gap: 22px; align-items: start; }
+/* Sin esto, la columna de la previa no puede encogerse por debajo del ancho del
+   papel (que es fijo, en mm) y revienta la rejilla: el modal entero se va a
+   scroll horizontal y la hoja queda cortada por la derecha, justo donde hay que
+   mirar si la boleta entró completa. */
+.grid-imp > * { min-width: 0; }
+.bloque-imp { display: flex; flex-direction: column; gap: 16px; }
+.pista { font-size: var(--fs-2xs); color: var(--text-2); letter-spacing: 0; text-transform: none; font-weight: 400; line-height: 1.5; margin-top: 6px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  all: unset;
+  cursor: pointer;
+  padding: 7px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  transition: background-color 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+.chip:hover { background: var(--surface-3); color: var(--text); }
+.chip.on { background: var(--wine); border-color: var(--wine); color: #fff; }
+.chip:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--wine-ring); }
+
+.medidas { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.medidas div { background: var(--surface-2); border-radius: var(--radius-sm); padding: 7px 10px; }
+.medidas b { display: block; font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
+.medidas span { font-size: var(--fs-3xs); letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+
+/* La vista previa es papel: fondo claro y texto negro, como va a salir. */
+.previa-caja {
+  display: flex;
+  justify-content: center;
+  max-height: 56vh;
+  overflow: auto;
+  /* La barra de desplazamiento vertical aparece recién cuando se monta la hoja.
+     Sin reservarle el sitio, el ancho con el que se calculó el aumento deja de
+     ser el real por esos ~15 px y la hoja se pasa por la derecha. */
+  scrollbar-gutter: stable;
+  padding: 20px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: #E9EDF3;
+}
+/* El contenido vive en un shadow root: ninguna regla de esta hoja entra ahí. */
+.previa-hoja { height: fit-content; background: #fff; color: #000; box-shadow: 0 6px 18px rgba(0, 0, 0, .35); }
+
+@media (max-width: 860px) {
+  .grid-imp { grid-template-columns: 1fr; }
+}
+
 .view { display: none; }
 .view.on { display: block; }
 

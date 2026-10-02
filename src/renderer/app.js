@@ -795,10 +795,15 @@ nuevaEl.addEventListener('click', async (e) => {
         observacion: estadoNueva.observacion,
         items: estadoNueva.lineas.map((l) => ({ productoId: l.productoId, cantidad: l.cantidad })),
       };
-      const resultado = estadoNueva.modoEdicion
-        ? await window.api.boletas.editar(estadoNueva.boletaId, payload)
-        : await window.api.boletas.crear(payload);
+      const esNueva = !estadoNueva.modoEdicion;
+      const resultado = esNueva
+        ? await window.api.boletas.crear(payload)
+        : await window.api.boletas.editar(estadoNueva.boletaId, payload);
       irA('detalle', { id: resultado.boleta.id });
+      // Una salida recién registrada necesita su papel para viajar con la
+      // mercadería, así que el diálogo de impresión se abre solo. Al editar no:
+      // ahí la boleta ya se imprimió cuando se creó.
+      if (esNueva) abrirImpresion(resultado.boleta.id, resultado.boleta.numero);
     } catch (err) {
       estadoNueva.mensaje = { tipo: 'error', texto: mensajeError(err) };
       pintarNueva();
@@ -860,6 +865,7 @@ function pintarDetalle() {
     <button class="btn ghost" data-go="salidas">Volver</button>
     ${puedeEditar ? '<button class="btn ghost" data-accion="editar-boleta">Editar</button>' : ''}
     ${puedeAnular ? '<button class="btn ghost" data-accion="anular-boleta">Anular</button>' : ''}
+    <button class="btn ghost" data-accion="imprimir-boleta">Imprimir boleta</button>
     <button class="btn" data-go="devolver">Registro de retornos</button>`;
 
   const avisoAnulada = boleta.anulada
@@ -926,6 +932,12 @@ detalleEl.addEventListener('click', async (e) => {
     return;
   }
 
+  if (accion === 'imprimir-boleta') {
+    const numero = estadoDetalle.datos && estadoDetalle.datos.boleta ? estadoDetalle.datos.boleta.numero : '';
+    abrirImpresion(estadoDetalle.boletaId, numero);
+    return;
+  }
+
   if (accion === 'anular-boleta') {
     estadoDetalle.mensaje = null;
     estadoDetalle.anulando = true;
@@ -956,6 +968,411 @@ detalleEl.addEventListener('click', async (e) => {
       pintarDetalle();
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// IMPRIMIR BOLETA DE SALIDA
+//
+// Mismo diálogo que el vale del inventario de utilitarios: impresora, papel,
+// copias y vista previa a escala real. Solo existe para las SALIDAS; el retorno
+// no emite papel porque el número y el comprobante los trae el área.
+// ---------------------------------------------------------------------------
+
+const PAPELES = [
+  { id: 80, texto: 'Ticket 80 mm' },
+  { id: 58, texto: 'Ticket 58 mm' },
+  { id: 210, texto: 'Hoja A4' },
+];
+
+const FUENTE_TICKET = "Consolas, 'Courier New', 'DejaVu Sans Mono', 'Liberation Mono', monospace";
+
+const estadoImpresion = {
+  abierto: false,
+  boletaId: null,
+  numero: '',
+  impresoras: [],
+  impresora: '',
+  papel: 80,
+  copias: 2,
+  ajustarAlto: false,
+  corrimiento: 0,
+  previa: null,
+  trabajando: false,
+  mensaje: null,
+};
+
+const modalPortal = document.getElementById('modal-portal');
+let temporizadorPrevia = null;
+// Cada petición de vista previa lleva número: si llegan fuera de orden (mover
+// el corrimiento dispara varias), solo se pinta la última pedida.
+let peticionPrevia = 0;
+
+async function abrirImpresion(boletaId, numero) {
+  estadoImpresion.abierto = true;
+  estadoImpresion.boletaId = boletaId;
+  estadoImpresion.numero = numero || '';
+  estadoImpresion.previa = null;
+  estadoImpresion.mensaje = null;
+  estadoImpresion.trabajando = false;
+  estadoImpresion.copias = 2;
+  pintarImpresion();
+
+  try {
+    const [impresoras, prefs] = await Promise.all([
+      window.api.impresion.impresoras(),
+      window.api.impresion.preferencias(),
+    ]);
+    estadoImpresion.impresoras = impresoras || [];
+    estadoImpresion.papel = prefs.papel;
+    estadoImpresion.ajustarAlto = prefs.ajustarAlto;
+    estadoImpresion.corrimiento = prefs.corrimientoMm;
+    // La impresora recordada solo se restaura si sigue instalada.
+    const guardada = estadoImpresion.impresoras.find((i) => i.name === prefs.impresora);
+    const predeterminada = estadoImpresion.impresoras.find((i) => i.isDefault);
+    estadoImpresion.impresora =
+      (guardada && guardada.name) ||
+      (predeterminada && predeterminada.name) ||
+      (estadoImpresion.impresoras[0] && estadoImpresion.impresoras[0].name) ||
+      '';
+  } catch (err) {
+    estadoImpresion.mensaje = { tipo: 'error', texto: mensajeError(err) };
+  }
+  pintarImpresion();
+  cargarPrevia();
+}
+
+function cerrarImpresion() {
+  estadoImpresion.abierto = false;
+  estadoImpresion.previa = null;
+  if (temporizadorPrevia) clearTimeout(temporizadorPrevia);
+  temporizadorPrevia = null;
+  peticionPrevia += 1;
+  modalPortal.innerHTML = '';
+}
+
+async function cargarPrevia() {
+  if (!estadoImpresion.abierto || estadoImpresion.boletaId == null) return;
+  const miPeticion = ++peticionPrevia;
+  try {
+    const previa = await window.api.impresion.vistaPrevia(
+      estadoImpresion.boletaId,
+      estadoImpresion.papel,
+      estadoImpresion.papel >= 200 ? 0 : estadoImpresion.corrimiento
+    );
+    if (miPeticion !== peticionPrevia) return;
+    estadoImpresion.previa = previa;
+    pintarPreviaImpresion();
+  } catch (err) {
+    if (miPeticion !== peticionPrevia) return;
+    estadoImpresion.mensaje = { tipo: 'error', texto: mensajeError(err) };
+    pintarImpresion();
+  }
+}
+
+// Sin la espera, mover el corrimiento abriría una ventana de armado por cada
+// toque en la flecha del campo.
+function programarPrevia(ms) {
+  if (temporizadorPrevia) clearTimeout(temporizadorPrevia);
+  temporizadorPrevia = setTimeout(() => {
+    temporizadorPrevia = null;
+    cargarPrevia();
+  }, ms);
+}
+
+/**
+ * Monta la hoja de la vista previa dentro de la caja.
+ *
+ * Va en un shadow root, no en el documento: las reglas de `styles.css` para
+ * `table`, `th` y `td` son las de la aplicación (mayúsculas, 12 px de relleno,
+ * líneas tenues) y se colaban en el papel, así que la A4 se veía con un
+ * encabezado y unas filas que no son las que salen impresas. Adentro del shadow
+ * no entra ninguna hoja de estilo del documento, y el `<style>` de abajo repite
+ * exactamente la regla `#hoja` del documento que se manda a la impresora.
+ */
+function montarPreviaHoja(caja) {
+  const p = estadoImpresion.previa;
+  if (!p) {
+    caja.innerHTML = '<div class="vacio">Armando la boleta…</div>';
+    return;
+  }
+
+  // El zoom se CALCULA con lo que mide la caja: con un valor fijo, el papel
+  // ampliado es más ancho que su columna y la boleta se ve cortada por los dos
+  // costados, justo donde hay que mirar si quedó derecha. Se usa `zoom` y no
+  // `transform: scale` porque transform no cambia el espacio que ocupa.
+  const anchoPapelPx = (p.anchoMm * 96) / 25.4;
+  const disponible = caja.clientWidth - 48;
+  const techo = p.anchoMm >= 200 ? 1.6 : 2.8;
+  const zoom = disponible > 0 ? Math.max(0.55, Math.min(techo, disponible / anchoPapelPx)) : 1;
+
+  // El MISMO relleno y la MISMA letra del documento que se imprime. Si acá se
+  // centrara o se usara la letra del programa, la vista previa mentiría justo
+  // sobre lo único que sirve: cómo va a salir en el papel.
+  const reglaHoja =
+    p.anchoMm >= 200
+      ? 'font-family: Arial, Helvetica, sans-serif; font-size: 10pt;'
+      : `white-space: pre; font-weight: 600; line-height: 116%; font-family: ${FUENTE_TICKET};`;
+
+  const hoja = document.createElement('div');
+  hoja.className = 'previa-hoja';
+  hoja.style.width = `${p.anchoMm}mm`;
+  hoja.style.padding = `${p.margenMm}mm`;
+  hoja.style.zoom = String(zoom);
+
+  const shadow = hoja.attachShadow({ mode: 'open' });
+  shadow.innerHTML =
+    `<style>#hoja { color: #000; margin: 0; ${reglaHoja} }</style>` +
+    `<div style="width:${p.utilMm}mm">${p.html}</div>`;
+
+  caja.replaceChildren(hoja);
+}
+
+function htmlMedidasImpresion() {
+  const p = estadoImpresion.previa;
+  if (!p) return '';
+  return `
+    <div class="medidas">
+      <div><b>${p.anchoMm} mm</b><span>ancho del papel</span></div>
+      <div><b>${p.cols} col.</b><span>columnas de texto</span></div>
+      <div><b>${p.tamLetraPt.toFixed(2)} pt</b><span>letra medida</span></div>
+      <div><b>${p.altoHojaMm.toFixed(0)} mm</b><span>alto de la hoja</span></div>
+    </div>`;
+}
+
+// Repintado quirúrgico: solo la previa y las medidas. Si se repintara el modal
+// completo, el campo que se está escribiendo perdería el foco en cada tecla.
+function pintarPreviaImpresion() {
+  const caja = document.getElementById('imp-previa');
+  if (caja) montarPreviaHoja(caja);
+  const medidas = document.getElementById('imp-medidas');
+  if (medidas) medidas.innerHTML = htmlMedidasImpresion();
+}
+
+function pintarImpresion() {
+  if (!estadoImpresion.abierto) {
+    modalPortal.innerHTML = '';
+    return;
+  }
+  const e = estadoImpresion;
+  const esTicket = e.papel < 200;
+
+  const opcionesImpresora = e.impresoras.length
+    ? e.impresoras
+        .map(
+          (i) =>
+            `<option value="${escapeHtml(i.name)}" ${i.name === e.impresora ? 'selected' : ''}>${escapeHtml(
+              i.displayName
+            )}${i.isDefault ? '   (predeterminada)' : ''}</option>`
+        )
+        .join('')
+    : '<option value="">No se encontró ninguna impresora instalada</option>';
+
+  const chipsPapel = PAPELES.map(
+    (p) =>
+      `<button class="chip ${p.id === e.papel ? 'on' : ''}" data-accion="imp-papel" data-papel="${p.id}">${p.texto}</button>`
+  ).join('');
+
+  const msg = e.mensaje ? `<div class="${e.mensaje.tipo}" style="margin:0 0 16px">${escapeHtml(e.mensaje.texto)}</div>` : '';
+
+  const ajustesTicket = esTicket
+    ? `
+      <div>
+        <label class="switch-row" style="text-transform:none;letter-spacing:0;font-size:var(--fs-xs);color:var(--text)">
+          <input type="checkbox" id="imp-ajustar" ${e.ajustarAlto ? 'checked' : ''}>
+          <span>Cortar el papel justo donde termina la boleta</span>
+        </label>
+        <p class="pista"><b>Déjalo destildado.</b> Tildado, se le pide a la impresora una hoja del alto
+        exacto de la boleta; casi ninguna acepta esa medida y, cuando no la acepta, manda la boleta al
+        medio del papel y queda mucho espacio en blanco arriba.</p>
+      </div>
+      <div>
+        <label>Correr la boleta a los costados</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input class="qty" type="number" id="imp-corrimiento" min="-10" max="10" step="0.5" value="${e.corrimiento}">
+          <span style="font-size:var(--fs-xs);color:var(--text-2)">mm</span>
+        </div>
+        <p class="pista">La boleta arranca sola al costado izquierdo del papel. Usa esto solo si queda
+        desparejo: positivo la mueve a la derecha, negativo a la izquierda. Se guarda para la próxima.</p>
+      </div>`
+    : '';
+
+  modalPortal.innerHTML = `
+    <div class="modal-fondo" data-accion="imp-fondo">
+      <div class="modal" role="dialog" aria-label="Imprimir boleta de salida">
+        <div class="modal-cab">
+          <h3>Imprimir boleta de salida</h3>
+          <span class="num">${escapeHtml(e.numero)}</span>
+        </div>
+        <div class="modal-cuerpo">
+          ${msg}
+          <div class="grid-imp">
+            <div class="bloque-imp">
+              <div>
+                <label>Impresora</label>
+                <select id="imp-impresora" ${e.impresoras.length ? '' : 'disabled'}>${opcionesImpresora}</select>
+              </div>
+              <div>
+                <label>Tamaño del papel</label>
+                <div class="chips">${chipsPapel}</div>
+              </div>
+              ${ajustesTicket}
+              <div>
+                <label>Copias</label>
+                <input class="qty" type="number" id="imp-copias" min="1" max="9" step="1" value="${e.copias}">
+                <p class="pista">Lo normal son 2: una se queda en el almacén y la otra viaja con la mercadería.</p>
+              </div>
+              <div id="imp-medidas">${htmlMedidasImpresion()}</div>
+            </div>
+            <div>
+              <label>Así va a salir impreso</label>
+              <div class="previa-caja" id="imp-previa"><div class="vacio">Armando la boleta…</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-pie">
+          <button class="btn ghost" data-accion="imp-cerrar">Cerrar</button>
+          <div class="crece"></div>
+          <button class="btn ghost" data-accion="imp-pdf" ${e.trabajando ? 'disabled' : ''}>Guardar PDF</button>
+          <button class="btn" data-accion="imp-imprimir" ${e.trabajando || !e.impresora ? 'disabled' : ''}>
+            ${e.trabajando ? 'Imprimiendo…' : 'Imprimir ahora'}
+          </button>
+        </div>
+      </div>
+    </div>`;
+
+  // El zoom depende del ancho real de la caja, que no existe hasta que el
+  // navegador la midió: se repinta la previa una vez montado el modal.
+  requestAnimationFrame(() => {
+    if (estadoImpresion.abierto) pintarPreviaImpresion();
+  });
+}
+
+modalPortal.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('[data-accion]');
+  if (!btn) return;
+  const accion = btn.getAttribute('data-accion');
+
+  // Clic en el velo, no en el panel.
+  if (accion === 'imp-fondo') {
+    if (ev.target === btn && !estadoImpresion.trabajando) cerrarImpresion();
+    return;
+  }
+
+  if (accion === 'imp-cerrar') {
+    if (!estadoImpresion.trabajando) cerrarImpresion();
+    return;
+  }
+
+  if (accion === 'imp-papel') {
+    const papel = Number(btn.getAttribute('data-papel'));
+    if (papel === estadoImpresion.papel) return;
+    estadoImpresion.papel = papel;
+    estadoImpresion.previa = null;
+    estadoImpresion.mensaje = null;
+    pintarImpresion();
+    cargarPrevia();
+    return;
+  }
+
+  if (accion === 'imp-imprimir') {
+    if (!estadoImpresion.impresora) {
+      estadoImpresion.mensaje = {
+        tipo: 'error',
+        texto: 'Windows no reporta ninguna impresora instalada. Conecta la impresora, instala su controlador y vuelve a abrir esta ventana.',
+      };
+      pintarImpresion();
+      return;
+    }
+    estadoImpresion.trabajando = true;
+    estadoImpresion.mensaje = null;
+    pintarImpresion();
+    try {
+      const resultado = await window.api.impresion.imprimir({
+        id: estadoImpresion.boletaId,
+        anchoMm: estadoImpresion.papel,
+        deviceName: estadoImpresion.impresora,
+        copias: estadoImpresion.copias,
+        ajustarAlto: estadoImpresion.ajustarAlto,
+        corrimientoMm: estadoImpresion.corrimiento,
+      });
+      estadoImpresion.trabajando = false;
+      if (resultado.ok) {
+        const copias = estadoImpresion.copias;
+        const impresora = estadoImpresion.impresora;
+        cerrarImpresion();
+        estadoDetalle.mensaje = {
+          tipo: 'ok',
+          texto: `Boleta enviada a ${impresora} (${copias} copia${copias === 1 ? '' : 's'}).`,
+        };
+        pintarDetalle();
+      } else {
+        estadoImpresion.mensaje = {
+          tipo: 'error',
+          texto: `La impresora devolvió este error: ${resultado.motivo || 'sin detalle'}`,
+        };
+        pintarImpresion();
+      }
+    } catch (err) {
+      estadoImpresion.trabajando = false;
+      estadoImpresion.mensaje = { tipo: 'error', texto: mensajeError(err) };
+      pintarImpresion();
+    }
+    return;
+  }
+
+  if (accion === 'imp-pdf') {
+    estadoImpresion.trabajando = true;
+    estadoImpresion.mensaje = null;
+    pintarImpresion();
+    try {
+      const resultado = await window.api.impresion.guardarPdf(estadoImpresion.boletaId, estadoImpresion.papel);
+      estadoImpresion.trabajando = false;
+      if (resultado.ok) {
+        estadoImpresion.mensaje = { tipo: 'ok', texto: `PDF guardado en ${resultado.ruta}` };
+      } else if (!resultado.cancelado) {
+        estadoImpresion.mensaje = { tipo: 'error', texto: `No se pudo guardar: ${resultado.motivo || 'sin detalle'}` };
+      }
+    } catch (err) {
+      estadoImpresion.trabajando = false;
+      estadoImpresion.mensaje = { tipo: 'error', texto: mensajeError(err) };
+    }
+    pintarImpresion();
+  }
+});
+
+// Los campos no repintan el modal completo: solo guardan el valor. Si no, el
+// campo que se está escribiendo perdería el foco en cada tecla.
+modalPortal.addEventListener('input', (ev) => {
+  if (ev.target.id === 'imp-copias') {
+    const n = Number(ev.target.value);
+    estadoImpresion.copias = Number.isFinite(n) ? Math.min(9, Math.max(1, Math.round(n))) : 1;
+    return;
+  }
+  if (ev.target.id === 'imp-corrimiento') {
+    const n = Number(ev.target.value);
+    estadoImpresion.corrimiento = Number.isFinite(n) ? Math.min(10, Math.max(-10, n)) : 0;
+    programarPrevia(250);
+  }
+});
+
+modalPortal.addEventListener('change', (ev) => {
+  if (ev.target.id === 'imp-impresora') {
+    estadoImpresion.impresora = ev.target.value;
+    const boton = modalPortal.querySelector('[data-accion="imp-imprimir"]');
+    if (boton) boton.disabled = estadoImpresion.trabajando || !estadoImpresion.impresora;
+    return;
+  }
+  if (ev.target.id === 'imp-ajustar') {
+    estadoImpresion.ajustarAlto = ev.target.checked;
+  }
+});
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && estadoImpresion.abierto && !estadoImpresion.trabajando) cerrarImpresion();
+});
+
+window.addEventListener('resize', () => {
+  if (estadoImpresion.abierto) pintarPreviaImpresion();
 });
 
 // ---------------------------------------------------------------------------
@@ -1743,6 +2160,8 @@ const estadoAjustes = {
   archivoRestaurar: null,
   integridad: null,
   recalculando: false,
+  empresa: { empresa: '', empresaDir: '', empresaRuc: '' },
+  guardandoEmpresa: false,
 };
 
 function nombreArchivo(ruta) {
@@ -1754,7 +2173,12 @@ async function abrirAjustes() {
   estadoAjustes.archivoRestaurar = null;
   estadoAjustes.integridad = null;
   try {
-    estadoAjustes.infoRespaldo = await window.api.respaldo.info();
+    const [infoRespaldo, empresa] = await Promise.all([
+      window.api.respaldo.info(),
+      window.api.empresa.obtener(),
+    ]);
+    estadoAjustes.infoRespaldo = infoRespaldo;
+    estadoAjustes.empresa = empresa;
   } catch (err) {
     estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
   }
@@ -1826,9 +2250,25 @@ function pintarAjustes() {
     }
   }
 
+  const emp = estadoAjustes.empresa || { empresa: '', empresaDir: '', empresaRuc: '' };
+
   sec.innerHTML = `
     <div class="head"><div><h2>Ajustes</h2><p>Datos y respaldo. Todo vive en esta computadora.</p></div></div>
     ${msg}
+    <div class="card">
+      <h3>Membrete de la boleta impresa <em>Encabeza cada boleta de salida que sale por impresora</em></h3>
+      <div class="pad">
+        <div class="grid2" style="margin-bottom:14px">
+          <div><label>Razón social</label><input id="aj-empresa" maxlength="60" placeholder="SFIDA" value="${escapeHtml(emp.empresa)}"></div>
+          <div><label>RUC</label><input id="aj-empresa-ruc" maxlength="20" placeholder="20123456789" value="${escapeHtml(emp.empresaRuc)}"></div>
+        </div>
+        <div><label>Dirección</label><input id="aj-empresa-dir" maxlength="90" placeholder="Av. Ejemplo 123 — Lima" value="${escapeHtml(emp.empresaDir)}"></div>
+        <div style="margin-top:14px">
+          <button class="btn" data-accion="guardar-empresa" ${estadoAjustes.guardandoEmpresa ? 'disabled' : ''}>${estadoAjustes.guardandoEmpresa ? 'Guardando…' : 'Guardar membrete'}</button>
+        </div>
+      </div>
+      <p class="note">Se imprime centrado arriba de la boleta. Si lo dejas vacío sale solo "SFIDA".</p>
+    </div>
     <div class="card">
       <h3>Respaldo</h3>
       <div class="pad">
@@ -1858,6 +2298,30 @@ ajustesEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-accion]');
   if (!btn) return;
   const accion = btn.getAttribute('data-accion');
+
+  if (accion === 'guardar-empresa') {
+    estadoAjustes.guardandoEmpresa = true;
+    estadoAjustes.mensaje = null;
+    const datos = {
+      empresa: document.getElementById('aj-empresa').value,
+      empresaDir: document.getElementById('aj-empresa-dir').value,
+      empresaRuc: document.getElementById('aj-empresa-ruc').value,
+    };
+    // Lo escrito se guarda en el estado antes de repintar: si no, el repintado
+    // de «Guardando…» volvería a dibujar los valores viejos y, si falla, se
+    // perdería lo que la persona acaba de escribir.
+    estadoAjustes.empresa = datos;
+    pintarAjustes();
+    try {
+      estadoAjustes.empresa = await window.api.empresa.guardar(datos);
+      estadoAjustes.mensaje = { tipo: 'ok', texto: 'Membrete guardado. Se verá en la próxima boleta impresa.' };
+    } catch (err) {
+      estadoAjustes.mensaje = { tipo: 'error', texto: mensajeError(err) };
+    }
+    estadoAjustes.guardandoEmpresa = false;
+    pintarAjustes();
+    return;
+  }
 
   if (accion === 'crear-respaldo') {
     estadoAjustes.cargandoRespaldo = true;

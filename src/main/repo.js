@@ -1225,9 +1225,139 @@ function recalcularIntegridad() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Configuración (tabla meta) y datos para la boleta impresa
+// ---------------------------------------------------------------------------
+
+function getConfig(clave, porDefecto = '') {
+  const fila = getDb().prepare('SELECT valor FROM meta WHERE clave = ?').get(clave);
+  return fila ? fila.valor : porDefecto;
+}
+
+function setConfig(clave, valor) {
+  getDb()
+    .prepare(
+      `INSERT INTO meta (clave, valor) VALUES (?, ?)
+       ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor`
+    )
+    .run(clave, String(valor ?? ''));
+}
+
+// El membrete es texto libre (razón social, dirección, RUC): no se normaliza a
+// mayúsculas al guardar. El ticket lo imprime en mayúsculas por su cuenta.
+function obtenerEmpresa() {
+  return {
+    empresa: getConfig('empresa', 'SFIDA'),
+    empresaDir: getConfig('empresa_dir', ''),
+    empresaRuc: getConfig('empresa_ruc', ''),
+  };
+}
+
+function guardarEmpresa({ empresa, empresaDir, empresaRuc }) {
+  const limpio = (t) => String(t ?? '').trim().replace(/\s+/g, ' ');
+  setConfig('empresa', limpio(empresa) || 'SFIDA');
+  setConfig('empresa_dir', limpio(empresaDir));
+  setConfig('empresa_ruc', limpio(empresaRuc));
+  return obtenerEmpresa();
+}
+
+const PAPELES_VALIDOS = [58, 80, 210];
+
+function normalizarAncho(anchoMm) {
+  const n = Number(anchoMm);
+  return PAPELES_VALIDOS.includes(n) ? n : 80;
+}
+
+function preferenciasImpresion() {
+  return {
+    impresora: getConfig('impresora_boletas', ''),
+    papel: normalizarAncho(getConfig('papel_boletas', '80')),
+    ajustarAlto: getConfig('ajustar_alto_papel', '0') === '1',
+    corrimientoMm: Number(getConfig('corrimiento_boleta_mm', '0')) || 0,
+  };
+}
+
+function guardarPreferenciasImpresion({ impresora, papel, ajustarAlto, corrimientoMm }) {
+  if (impresora != null) setConfig('impresora_boletas', impresora);
+  if (papel != null) setConfig('papel_boletas', normalizarAncho(papel));
+  if (ajustarAlto != null) setConfig('ajustar_alto_papel', ajustarAlto ? '1' : '0');
+  if (corrimientoMm != null) setConfig('corrimiento_boleta_mm', Number(corrimientoMm) || 0);
+  return preferenciasImpresion();
+}
+
+function fechaHoraImpresion() {
+  return new Date()
+    .toLocaleString('es-PE', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    .replace(',', '');
+}
+
+/**
+ * Junta todo lo que necesita la boleta impresa de una salida.
+ *
+ * Lee de la base, no de la UI: lo que se imprime es lo que está guardado. Las
+ * cantidades son las que SALIERON; lo devuelto no entra en este papel, que es
+ * el comprobante de la entrega.
+ */
+function datosImpresionBoleta(id) {
+  const db = getDb();
+  const boleta = db
+    .prepare(
+      `SELECT b.numero, b.fecha_salida, b.observacion, b.anulada, b.motivo_anulacion,
+              a.nombre AS area_nombre, e.nombre AS encargado_nombre
+       FROM boletas b
+       JOIN areas a ON a.id = b.area_id
+       JOIN encargados e ON e.id = b.encargado_id
+       WHERE b.id = ?`
+    )
+    .get(id);
+  if (!boleta) throw new Error('La boleta no existe.');
+
+  const items = db
+    .prepare(
+      `SELECT p.modelo, p.color, p.talla, bi.cantidad_salida AS cantidad
+       FROM boleta_items bi
+       JOIN productos p ON p.id = bi.producto_id
+       WHERE bi.boleta_id = ?
+       ORDER BY p.modelo, p.color, p.talla`
+    )
+    .all(id);
+
+  return {
+    numero: boleta.numero,
+    fecha: boleta.fecha_salida,
+    area: boleta.area_nombre,
+    encargado: boleta.encargado_nombre,
+    observacion: boleta.observacion || '',
+    anulada: boleta.anulada === 1,
+    motivoAnulacion: boleta.motivo_anulacion || '',
+    items,
+    ...obtenerEmpresa(),
+    impresoEl: fechaHoraImpresion(),
+  };
+}
+
 module.exports = {
   normalizarTexto,
   transaccion,
+  config: {
+    get: getConfig,
+    set: setConfig,
+    obtenerEmpresa,
+    guardarEmpresa,
+    preferenciasImpresion,
+    guardarPreferenciasImpresion,
+    normalizarAncho,
+  },
+  impresion: {
+    datosBoleta: datosImpresionBoleta,
+  },
   productos: {
     listar: listarProductos,
     listarPagina: listarProductosPagina,
