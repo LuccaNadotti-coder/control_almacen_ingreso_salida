@@ -44,3 +44,17 @@ Solo las SALIDAS emiten papel. El retorno no imprime nada: su numero y su compro
     documento real. Si entran los estilos de la aplicacion, la previa miente sobre lo unico que sirve.
 12. La ventana oculta de la boleta nunca puede ser la ultima viva: `window-all-closed` consulta
     `hayBoletasAbiertas()` antes de cerrar la app.
+
+## Identidad del instalador (no tocar sin verificar)
+En esta PC conviven otras apps Electron empaquetadas con electron-builder (SFIDA Utiles v5,
+appId `com.sfida.utiles`). El instalador NSIS identifica una instalacion previa SOLO por
+`Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_GUID}`, y solo borra la carpeta que esa
+clave declara. Por eso:
+- `nsis.guid` queda fijo en `64d8407c-5d0d-5ab3-aad8-dd0bd2de5417`, que es la clave con la que esta
+  app ya esta registrada. Cambiarlo deja un duplicado en Programas y caracteristicas.
+- SFIDA Utiles v5 vive en `01eb1538-e68c-5945-8411-d6b9997d9d07`. Son distintas: un instalador no
+  puede encontrar ni ejecutar el desinstalador del otro.
+- `allowToChangeInstallationDirectory: false` y `perMachine: true`, para que nadie pueda apuntar la
+  instalacion a la carpeta de otro programa.
+- La ruta de datos no depende de nada de esto: `main.js` la fija a mano en
+  `appData/SFIDA-Almacen-Datos`, independiente de appId y productName.
